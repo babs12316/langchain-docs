@@ -82,7 +82,10 @@ Parameters
     For example:    
     “ChatGPT is amazing!” → ~4 tokens.    
     1000 tokens ≈ 750 words.    
-    1 token = 0.75 words      
+    1 token = 0.75 words   
+    ✅ Tips:  
+    max_tokens does not work for local model such ollama. For such local models there will be model specific parameter.    
+    In case of ollama its num_predict
       
   ⏱️ timeout  
      Purpose: Sets a maximum time (in seconds) the model is allowed to take before throwing a timeout error.  
@@ -197,6 +200,36 @@ agent = create_agent(
 )
 
 ```
+#### Invocation   
+A chat model must be invoked to generate an output. There are three primary invocation methods, each suited to different use cases.  
+Invoke, Stream, Batch  
+  
+###### Invoke  
+The most straightforward way to call a model is to use invoke() with a single message or a list of messages.
+
+```
+from langchain.chat_models import init_chat_model
+
+llm = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=30, temperature=0)
+
+response = llm.invoke("who is president of usa?")
+
+print(f"president is {response}")
+
+output: reponse is an AI message and has following format
+{
+    "content": "...", # contains AI answer
+    "additional_kwargs": {},  # arguments/call to tool
+    "response_metadata": {...}, # cotains info about response such as created_at, total_duration, prompt_eval_duration
+    "id": "...",
+    "usage_metadata": {...} # contains models token info such as input_tokens, output_tokens, total_tokens
+}
+```
+A list of messages can be provided to a model to represent conversation history. Each message has a role that models use to indicate   who sent the message in the conversation.   
+
+
+
+
 
 
 
