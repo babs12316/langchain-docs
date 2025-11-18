@@ -225,7 +225,74 @@ output: reponse is an AI message and has following format
     "usage_metadata": {...} # contains models token info such as input_tokens, output_tokens, total_tokens
 }
 ```
-A list of messages can be provided to a model to represent conversation history. Each message has a role that models use to indicate   who sent the message in the conversation.   
+A list of messages can be provided to a model to represent conversation history. Each message has a role that models use to indicate   who sent the message in the conversation.  
+2 ways to passing list of messages to model  
+```
+from langchain.messages import HumanMessage, AIMessage, SystemMessage
+
+conversation = [
+    {"role": "system", "content": "You are a helpful assistant that translates English to French."},
+    {"role": "user", "content": "Translate: I love programming."},
+    {"role": "assistant", "content": "J'adore la programmation."},
+    {"role": "user", "content": "Translate: I love building applications."}
+]
+
+response = model.invoke(conversation)
+print(response)  # AIMessage("J'adore créer des applications.")
+```
+
+```
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+conversation = [
+    SystemMessage("You are a helpful assistant that translates English to French."),
+    HumanMessage("Translate: I love programming."),
+    AIMessage("J'adore la programmation."),
+    HumanMessage("Translate: I love building applications.")
+]
+
+response = model.invoke(conversation)
+print(response)  # AIMessage("J'adore créer des applications.")
+
+
+```
+
+###### Stream
+
+Most models can stream their output content while it is being generated. By displaying output progressively, **streaming significantly   improves user experience**, particularly for longer responses  
+
+As opposed to invoke(), which returns a single AIMessage after the model has finished generating its full response, stream() returns   multiple AIMessageChunk objects, each containing a portion of the output text. Importantly, each chunk in a stream is designed to be   gathered into a full message via summation  
+
+```
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
+
+full = None
+
+for chunk in model.stream("What is color of sun?"):
+    full = chunk if full is None else full + chunk
+    print(full.text)
+
+
+print(full.content_blocks)
+
+
+#output
+
+The
+The color
+The color of
+The color of the
+The color of the Sun
+The color of the Sun is
+The color of the Sun is actually
+The color of the Sun is actually white
+
+
+```
+
+
 
 
 
