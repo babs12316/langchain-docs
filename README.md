@@ -292,6 +292,115 @@ The color of the Sun is actually white
 
 ```
 
+###### Streaming events  
+LangChain chat models can also stream semantic events using astream_events().  
+Just like a frontend component has lifecycle events:  
+  
+onMount  
+onUpdate  
+onDestroy  
+
+…an AI model in LangChain has semantic lifecycle events such as:  
+on_start  
+on_token    
+on_thinking_start  
+on_tool_start  
+on_tool_end   
+on_message  
+on_end    
+on_error  
+  
+These describe what stage of the process the model/agent is currently in.  
+
+```
+from langchain.chat_models import init_chat_model
+import asyncio
+
+model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
+
+
+async def myfunc():
+    async for event in model.astream_events("Hello"):
+
+        if event["event"] == "on_chat_model_start":
+            print(f"Input {event['data']['input']}")
+        elif event["event"] == "on_chat_model_stream":
+            print(f"Token {event['data']['chunk'].text}")
+        elif event["event"] == "on_chat_model_end":
+            print(f"Full messages {event['data']['output'].text}")
+        else:
+            pass
+
+
+if __name__ == "__main__":
+    asyncio.run(myfunc())
+
+
+Input Hello
+Token Hello
+Token !
+Token  How
+Token  are
+Token  you
+Token  today
+Token ?
+Token  Is
+Token  there
+Token  something
+Token  I
+Token  can
+Token  help
+Token  you
+Token  with
+Token  or
+Token  would
+Token  you
+Token  like
+Token  to
+Token  chat
+Token ?
+Token 
+Token 
+Full messages Hello! How are you today? Is there something I can help you with or would you like to chat?
+
+```
+
+##### Batch
+Batching a collection of independent requests to a model can significantly improve performance and reduce costs, as the processing can   be done in parallel:  
+
+```
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
+
+responses = model.batch([
+    "Why do parrots have colorful feathers?",
+    "How do airplanes fly?",
+    "What is quantum computing?"
+])
+
+for response in responses:
+    print(response)
+```
+
+By default, batch() will only return the final output for the entire batch. If you want to receive the output for each individual  
+input as it finishes generating, you can stream results with batch_as_completed():
+
+```
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
+
+for response in model.batch_as_completed([
+    "Why do parrots have colorful feathers?",
+    "How do airplanes fly?",
+    "What is quantum computing?"
+]):
+    print(response)
+
+```
+
+
 
 
 
