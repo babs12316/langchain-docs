@@ -399,6 +399,52 @@ for response in model.batch_as_completed([
     print(response)
 
 ```
+When processing a large number of inputs using batch() or batch_as_completed(), you may want to control the maximum number of parallel   calls. This can be done by setting the max_concurrency attribute in the RunnableConfig dictionary.  
+```
+model.batch(
+    list_of_inputs,
+    config={
+        'max_concurrency': 5,  # Limit to 5 parallel calls
+    }
+)
+
+```
+
+
+```
+
+A model with bind_tools() is tool-aware but not autonomous. The LLM sees the tools and can decide whether to call them, but YOU write the loop that decides what happens next. You have to manually check if a tool was called, execute it, pass the result back, and repeat until the model stops using tools.
+
+An agent wraps this entire loop for you. You give it tools and a goal, and it automatically:
+Side-by-Side Comparison
+Task	            bind_tools()	       Agent
+Model sees tools 	✅ Automatic	✅ Automatic
+View tool calls  	✅ Automatic	✅ Automatic (internal)
+Execute tools   	❌ Manual	    ✅ Automatic
+Loop management 	❌ Manual	    ✅ Automatic
+Error handling	  ❌ Manual	    ✅ Automatic (
+State management	❌ Manual	    ✅ Automaticù
+
+
+```
+
+
+```
+
+Decision Table
+Need	Model + bind_tools()	Agent
+Single tool call only	✅ Perfect	Overkill
+Custom execution logic	✅ Full control	Limited
+Multi-step reasoning	❌ Manual loop	✅ Automatic
+Unknown tool count	❌ Error-prone	✅ Handles it
+Middleware/hooks	❌ Not available	✅ Full support
+Simplicity	❌ Code per tool call	✅ One call
+Server-side tools	✅ Simple	✅ Works too
+
+
+```
+
+
 
 
 
