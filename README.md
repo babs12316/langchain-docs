@@ -7,7 +7,7 @@ Agents takes model, tools and system_prompt
 
 Lets check these component one by one.  
 
-### Model  
+### Agent - Model  
 The model is the reasoning engine of your agent.  
 Its like a brain of AI agent which can read your question (it takes your input as text),, analyze it using patterns it has learned from data, decide which tool or action best   matches the request (based on those patterns), then respond with the predicted best answer.   
 
@@ -199,7 +199,196 @@ agent = create_agent(
     middleware=[dynamic_model_selection]
 )
 
+```  
+
+
+### Agent - Tools
+  
+Tools give agents the ability to take actions. Agents go beyond simple model-only tool binding by facilitating:  
+Multiple tool calls in sequence (triggered by a single prompt)  
+Parallel tool calls when appropriate  
+Dynamic tool selection based on previous results  
+Tool retry logic and error handling  
+State persistence across tool calls   
+
+Many AI applications interact with users via natural language. However, some use cases require models to interface directly with external systems—such as APIs, databases, or file systems—using structured input.
+Tools are components that agents call to perform actions. They extend model capabilities by letting them interact with the world through well-defined inputs and outputs.
+  
+Defining tools    
+Tools can be specified as plain Python functions or coroutines.  
+  
+Tools are of 2 types    
+1. server side tools  
+2. client side tools
+
+
+**server side tools**    
+Server-side tools are provider-hosted tools that the model calls and executes internally in one turn — you get results without   executing anything yourself. Yes, they're only from providers, but agents can absolutely use them.    
+
+The model provider (OpenAI, Anthropic, etc.) hosts certain tools that the model can invoke directly. The model runs the tool, gets   
+the result, and analyzes it — all in a single API call. You never see or execute the tool yourself.  
 ```
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model("gpt-4.1-mini")
+
+# Provider-hosted tool (OpenAI's web search)
+model_with_tools = model.bind_tools([{"type": "web_search"}])
+
+# ONE call: model searches internally, returns answer with results
+response = model_with_tools.invoke("What was a positive news story today?")
+
+# You get the final answer already analyzed
+print(response.content_blocks)
+# [
+#     {"type": "server_tool_call", "name": "web_search", ...},
+#     {"type": "server_tool_result", "status": "success", ...},
+#     {"type": "text", "text": "Here are positive stories..."}
+# ]
+```
+Who Provides Server-Side Tools?  
+Only the AI model providers such as Openai,Anthropic, google etc.  
+
+Can Agents Use Server-Side Tools?  
+Yes, absolutely. Agents work seamlessly with server-side tools:  
+
+```
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+
+model = ChatOpenAI(model="gpt-4o")
+
+# Mix server-side and client-side tools
+agent = create_agent(
+    model=model,
+    tools=[
+        {"type": "web_search"},  # ✅ Server-side (provider-hosted)
+        my_custom_database_tool,  # ✅ Client-side (you execute it)
+        my_api_wrapper_tool,      # ✅ Client-side
+    ],
+    system_prompt="Research topics and fetch from our database"
+)
+
+# Agent automatically uses server-side when it needs web search
+# Agent uses client-side for database queries
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Search the web for X and check our database"}]
+})
+```
+Why You'd Use Each  
+Use Server-Side Tools When:  
+  
+You need web search or code execution  
+You trust the provider's implementation  
+You want simplicity (one API call)  
+  
+Use Client-Side Tools When:  
+  
+You need custom logic (database queries, APIs)  
+You want full control over execution  
+You're integrating proprietary systems  
+ 
+
+```
+Full Comparison
+Aspect	                    Server-Side Tools	                     Client-Side Tools
+Import needed?	              ❌ No                     	           ✅ Yes
+Definition	                {"type": "web_search"}      	           @tool def my_tool(): ...
+Who runs it?	              Provider's servers	                      Your code
+Available tools           	Limited (provider decides)	               Unlimited (you build them)
+Customization             	❌ Not possible                       	  ✅ Full control
+Example	{                   "type": "web_search"}	                     from langchain.tools import tool
+
+
+```
+Create tools  
+The simplest way to create a tool is with the @tool decorator. By default, the function’s docstring becomes the tool’s description   
+that helps the model understand when to use it.
+
+A docstring is a text string that describes what a function does — it's placed right after the function definition and the model   
+reads it to decide when to use the tool.  
+
+```
+Quick Checklist for Good Docstrings
+
+@tool
+def my_tool(param1: str, param2: int) -> str:
+    """✅ Start with one-line summary explaining what the tool does.
+    
+    ✅ Add more details about when/why to use it (optional).
+    
+    ✅ Document each parameter with Args section.
+    
+    ✅ Explain what gets returned with Returns section.
+    """
+    return "result"
+
+```
+```
+Inside a Real Agent
+
+from langchain.agents import create_agent
+from langchain.tools import tool
+from langchain_openai import ChatOpenAI
+
+@tool
+def check_inventory(product_id: str) -> str:
+    """Check product availability in our inventory system.
+    
+    Returns stock levels and warehouse locations for a given product.
+    Use this when customers ask if something is in stock.
+    
+    Args:
+        product_id: SKU or product ID (e.g., "PROD-12345")
+        
+    Returns:
+        Stock level and warehouse info
+    """
+    return "In stock: 50 units in Warehouse A"
+
+agent = create_agent(
+    model=ChatOpenAI(model="gpt-4o"),
+    tools=[check_inventory],
+    system_prompt="You are a helpful customer service agent"
+)
+
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Is the laptop in stock?"}]
+})
+
+# Agent reads docstring, understands what check_inventory does,
+# calls it, and returns: "Yes, we have 50 units in Warehouse A"
+
+```  
+
+Tool also require Type hints are required as they define the tool’s input schema. Type hints means type of arguments passed to tool and return type of   tool.  
+
+```
+from langchain.tools import tool
+
+# ✅ WITH type hints (REQUIRED for tools)
+@tool
+def search_database(query: str, limit: int = 10) -> str:
+    """Search the database."""
+    return f"Found {limit} results for '{query}'"
+
+# ❌ WITHOUT type hints (WILL NOT WORK as a tool)
+@tool
+def search_database(query, limit=10):
+    """Search the database."""
+    return f"Found {limit} results for '{query}'"
+
+```
+
+
+
+
+
+
+  
+
+
+
 #### Invocation   
 A chat model must be invoked to generate an output. There are three primary invocation methods, each suited to different use cases.  
 Invoke, Stream, Batch  
