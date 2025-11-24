@@ -379,6 +379,123 @@ def search_database(query, limit=10):
     return f"Found {limit} results for '{query}'"
 
 ```
+use **@wrap_tool_call** decorator to handle exception/error in tools  
+```
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
+from langchain.tools import tool
+from langchain.agents.middleware import wrap_tool_call
+from langchain.messages import ToolMessage
+
+model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
+
+@tool
+def get_weather(city: str) -> str:
+    """Get weather for a city."""
+    if not city or city.strip() == "":
+        raise ValueError("City name cannot be empty")
+    
+    if not city.replace(" ", "").isalpha():
+        raise ValueError(f"Invalid city name '{city}'. Only letters allowed")
+    
+    return f"Weather of {city} is sunny"
+
+@wrap_tool_call  # ← Decorator activates here
+def handle_tool_errors(request, handler):
+    """Handle tool errors with custom messages"""
+  
+    # request — Information about the tool call (what tool, what arguments, etc.)
+    # handler — A function that actually executes the tool
+    # request contains:
+    #   - request.tool_call["id"] → unique ID of this tool call
+    #   - request.tool_call["name"] → name of the tool ("get_weather")
+    #   - request.tool_call["args"] → arguments passed to tool ({"city": "dd123"})
+    
+    try:
+        # ✅ Normal case: tool succeeds
+        result = handler(request)  # Calls get_weather(city="dd123")
+        print(f"✅ Tool succeeded: {result}")
+        return result
+    
+    except Exception as e:
+        # ❌ Error case: tool raises exception
+        print(f"❌ Tool failed: {str(e)}")
+        
+        # Return error message to agent instead of crashing
+        return ToolMessage(
+            content=f"Please check your input and try again ({str(e)})",
+            tool_call_id=request.tool_call["id"]  # Links error to original tool call, What happens:
+
+#Agent knows exactly which tool call this error belongs to
+#Agent can correlate error with the original tool invocation
+#Agent can continue reasoning properly
+
+# without tool_call_id
+#Agent gets the error message but doesn't know WHICH tool call failed
+#Agent might get confused about execution flow
+#Can lead to incorrect reasoning or loops
+        )
+
+agent = create_agent(
+    model=model,
+    tools=[get_weather],
+    middleware=[handle_tool_errors]
+)
+
+# TEST: Invalid input
+print("=" * 60)
+print("CALLING AGENT WITH INVALID INPUT")
+print("=" * 60)
+response = agent.invoke({
+    "messages": [{
+        "role": "user",
+        "content": "What's weather in dd123?"
+    }]
+})
+print("Agent response:", response["messages"][-1].content)
+
+```
+You can have multiple tools below @tool_call_wrap and cover exceptions/erros in all those tools as follows  
+```
+@wrap_tool_call
+def handle_tool_errors(request, handler):
+    """Handle errors differently based on which tool is being called"""
+    tool_name = request.tool_call["name"]
+    tool_args = request.tool_call.get("args", {})
+    
+    try:
+        return handler(request)
+    
+    except Exception as e:
+        # ✅ Custom handling per tool
+        if tool_name == "get_weather":
+            return ToolMessage(
+                content=f"Weather error: {str(e)}. Try a real city name.",
+                tool_call_id=request.tool_call["id"]
+            )
+        
+        elif tool_name == "convert_temperature":
+            return ToolMessage(
+                content=f"Conversion error: {str(e)}. Use 'fahrenheit' or 'kelvin'.",
+                tool_call_id=request.tool_call["id"]
+            )
+        
+        else:
+            # Default for any other tools
+            return ToolMessage(
+                content=f"Error in {tool_name}: {str(e)}",
+                tool_call_id=request.tool_call["id"]
+            )
+
+agent = create_agent(
+    model=model,
+    tools=[get_weather, get_temperature, convert_temperature],
+    middleware=[handle_tool_errors]
+)
+
+```
+
+
 
 
 
