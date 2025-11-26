@@ -555,6 +555,126 @@ Flow of tool execution
 
 ```
 
+Agent follows ReAct pattern. ReAct (Reasoning + Acting) is a pattern where the agent thinks through a problem step-by-step, then takes actions (calls tools), then reasons again   based on the results.  
+  
+
+What is ReAct?  
+ReAct = "Reason" + "Act"  
+  
+The agent:  
+  
+Thinks (Reason): "What do I need to do?"  
+Does (Act): Calls a tool to get information  
+Thinks (Reason): "What does this result mean?"  
+Repeats until it has the answer    
+
+```
+User: "What's the population of France's capital?"
+
+Agent Reasoning:
+  "The user is asking about France's capital.
+   I need to find out:
+   1. What is France's capital?
+   2. What is its population?"
+
+Agent Acting:
+  Call tool: search("France capital")
+  
+Tool Result:
+  "Paris is the capital of France"
+
+Agent Reasoning:
+  "Good! Now I know the capital is Paris.
+   Now I need to find the population."
+
+Agent Acting:
+  Call tool: search("Paris population")
+  
+Tool Result:
+  "Paris population is approximately 2.1 million"
+
+Agent Reasoning:
+  "Perfect! I now have both pieces of information.
+   I can answer the user's question."
+
+Agent Final Answer:
+  "The capital of France is Paris, 
+   and its population is approximately 2.1 million people."
+
+```  
+
+
+```
+In Summary
+
+ReAct Pattern = Thinking out loud while solving problems
+
+Think → Act → Observe → Think → Act → Observe → ... → Answer
+Just like how YOU solve a complex problem:
+
+Think: "What information do I need?"
+Act: "Let me search for it"
+Observe: "Here's what I found"
+Think: "What does this mean? Do I need more?"
+Repeat or Answer
+
+
+```
+
+ **System prompt** tells the agent HOW to perform a task — it's like giving instructions/guidelines to the agent.  
+ What System Prompt Does  
+ system_prompt = "You are a helpful weather assistant. Always call the get_weather tool when asked about weather."    
+ This tells the agent:  
+  
+WHO you are (helpful weather assistant)  
+WHAT to do (call get_weather tool)  
+HOW to behave (helpfully)    
+
+```
+Sytem Prompt Vs user message
+
+# SYSTEM PROMPT: Instructions for the agent
+system_prompt = "You are a weather assistant. Be concise and accurate."
+
+# USER MESSAGE: What the user is asking
+user_message = "What's the weather in New York?"
+
+# Agent thinks:
+# "My system prompt says I'm a weather assistant.
+#  The user is asking about weather.
+#  I should call my weather tool."
+
+```  
+ When no system_prompt is provided, the agent will infer its task from the messages directly.  Output: May be unpredictable, agent might not use the tool.  
+
+ ```
+# ✅ BEST PRACTICE: Always include tool guidance in system prompt
+agent = create_agent(
+    model=model,
+    tools=[tool1, tool2, tool3],
+    system_prompt="""You are [role].
+
+Tool usage:
+- Use [tool1] when [condition]
+- Use [tool2] when [condition]
+- Use [tool3] when [condition]
+
+Always prioritize [some tool] for accuracy."""
+)
+
+# Why? Because:
+# 1. Ensures consistent tool usage
+# 2. Prevents agent hallucination (making up answers)
+# 3. Better control over agent behavior
+# 4. Clearer expectations
+# 5. Easier to debug issues
+
+
+```
+
+ 
+
+
 
 
 
