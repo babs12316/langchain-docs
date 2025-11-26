@@ -393,7 +393,17 @@ model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=1
 def get_weather(city: str) -> str:
     """Get weather for a city."""
     if not city or city.strip() == "":
-        raise ValueError("City name cannot be empty")
+        raise ValueError("City name cannot be empty") # creates and throws an error with a custom message. It stops the function and tells Python "something went wrong".
+# raise -  # Command: "Stop here and throw an error"
+#ValueError  # Type of error for invalid values
+#Common error types:
+
+#ValueError — Wrong VALUE (e.g., invalid city name)
+#TypeError — Wrong TYPE (e.g., got string, expected number)
+#ZeroDivisionError — Divided by zero
+#KeyError — Key doesn't exist in dictionary
+#IndexError — Index out of range
+#Exception — Generic catch-all error
     
     if not city.replace(" ", "").isalpha():
         raise ValueError(f"Invalid city name '{city}'. Only letters allowed")
@@ -462,9 +472,13 @@ def handle_tool_errors(request, handler):
     """Handle errors differently based on which tool is being called"""
     tool_name = request.tool_call["name"]
     tool_args = request.tool_call.get("args", {})
+
+  print("write a code here that you want to execute before tool call")
     
     try:
-        return handler(request)
+         result = handler(request)
+         print("write a code here that you want to execute before tool call")
+        return result
     
     except Exception as e:
         # ✅ Custom handling per tool
@@ -492,6 +506,52 @@ agent = create_agent(
     tools=[get_weather, get_temperature, convert_temperature],
     middleware=[handle_tool_errors]
 )
+
+```
+
+
+```
+Flow of tool execution 
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  Agent: "I need to call get_weather(city='dd123')"    │
+│                                                         │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+                      ↓
+        ┌─────────────────────────────┐
+        │  @wrap_tool_call INTERCEPTS │
+        │  (Middleware activates)     │
+        └─────────────┬───────────────┘
+                      │
+                      ↓
+            ┌─────────────────────┐
+            │  try:               │
+            │    handler(request) │ ← Executes the tool
+            │                     │
+            └────────────┬────────┘
+                         │
+          ┌──────────────┴──────────────┐
+          ↓                             ↓
+    ✅ SUCCEEDS                  ❌ FAILS (Exception)
+    return result                    ↓
+          │                    except Exception as e:
+          │                    return ToolMessage(
+          │                        content=error,
+          │                        tool_call_id=id
+          │                    )
+          │                         │
+          └────────────┬────────────┘
+                       ↓
+            ┌──────────────────────┐
+            │ Agent receives result│
+            │ or error message     │
+            └──────────┬───────────┘
+                       ↓
+            ┌──────────────────────┐
+            │ Agent responds       │
+            │ to user              │
+            └──────────────────────┘
 
 ```
 
