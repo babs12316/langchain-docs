@@ -671,10 +671,310 @@ Always prioritize [some tool] for accuracy."""
 
 
 ```
+  
+Dynamic system prompt  
+Dynamic system prompt means the system prompt CHANGES based on runtime conditions — it's not fixed, it adapts to the situation.  
+  
+Instead of one static prompt, the prompt is generated on-the-fly based on:  
+  
+User data  
+Agent state  
+Context  
+Current conditions    
 
- 
+For more advanced use cases where you need to modify the system prompt based on runtime context or agent state, you can use middleware.    
+The @dynamic_prompt decorator creates middleware that generates system prompts based on the model request  
 
 
+```
+How Dynamic Prompt Works
+
+User provides context
+        ↓
+Agent starts
+        ↓
+@dynamic_prompt runs
+        ↓
+Function generates prompt based on:
+├─ User role
+├─ Conversation history
+├─ Message content
+├─ Time
+├─ User tier/status
+└─ Any other condition
+        ↓
+Generated prompt is used
+        ↓
+Agent behaves according to dynamic prompt
+
+```
+
+
+```
+# Function that GENERATES the prompt dynamically
+@dynamic_prompt
+def personalized_prompt(request):
+    """Generate prompt based on user level"""
+    user_level = request.runtime.context.get("user_level", "beginner")
+    
+    if user_level == "expert":
+        return "You are an expert meteorologist. Provide detailed technical analysis."
+    else:
+        return "You are a helpful weather assistant. Keep it simple."
+
+agent = create_agent(
+    model=model,
+    tools=[get_weather],
+    middleware=[personalized_prompt],
+    context_schema={"user_level": str}
+)
+
+# Expert user gets expert prompt
+response1 = agent.invoke(
+    {"messages": [{"role": "user", "content": "Weather?"}]},
+    context={"user_level": "expert"}  # ← Different context
+)
+
+# Beginner user gets beginner prompt
+response2 = agent.invoke(
+    {"messages": [{"role": "user", "content": "Weather?"}]},
+    context={"user_level": "beginner"}  # ← Different context
+)
+
+
+```
+
+
+```
+Dynamic System Prompt Based on User Role
+
+from langchain.agents import create_agent
+from langchain.agents.middleware import dynamic_prompt
+from langchain.chat_models import init_chat_model
+from langchain.tools import tool
+from dataclasses import dataclass
+
+model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
+
+@tool
+def access_database(query: str) -> str:
+    """Access company database"""
+    return f"Database result for: {query}"
+
+@tool
+def view_salary(employee_id: str) -> str:
+    """View employee salary"""
+    return f"Salary: $50,000"
+
+@tool
+def fire_employee(employee_id: str) -> str:
+    """Fire an employee"""
+    return f"Employee {employee_id} removed"
+
+# Define context schema
+@dataclass
+class UserContext:
+    user_role: str  # "admin", "manager", "employee"
+    user_name: str
+
+# ✅ DYNAMIC PROMPT: Changes based on user role
+@dynamic_prompt
+def role_based_prompt(request) -> str:
+    """Generate prompt based on user role"""
+    context = request.runtime.context
+    user_role = context.user_role
+    user_name = context.user_name
+    
+    if user_role == "admin":
+        return f"""You are an Admin Assistant for {user_name}.
+        
+You have full access to all tools:
+- access_database: Query any data
+- view_salary: Check employee salaries
+- fire_employee: Remove employees
+
+You can do anything. Be thorough."""
+    
+    elif user_role == "manager":
+        return f"""You are a Manager Assistant for {user_name}.
+        
+You have limited access:
+- access_database: Query company data
+- view_salary: Check your team's salaries
+
+You CANNOT:
+- fire_employee (requires admin)
+
+Be professional and follow company policy."""
+    
+    else:  # employee
+        return f"""You are an Employee Assistant for {user_name}.
+        
+You have minimal access:
+- access_database: View your own data only
+
+You CANNOT:
+- view_salary (confidential)
+- fire_employee (not authorized)
+
+Protect confidentiality."""
+
+agent = create_agent(
+    model=model,
+    tools=[access_database, view_salary, fire_employee],
+    middleware=[role_based_prompt],
+    context_schema=UserContext
+)
+
+print("=" * 70)
+print("ADMIN USER")
+print("=" * 70)
+response_admin = agent.invoke(
+    {"messages": [{"role": "user", "content": "What can I do?"}]},
+    context=UserContext(user_role="admin", user_name="Alice")
+)
+print(response_admin["messages"][-1].content)
+
+print("\n" + "=" * 70)
+print("MANAGER USER")
+print("=" * 70)
+response_manager = agent.invoke(
+    {"messages": [{"role": "user", "content": "What can I do?"}]},
+    context=UserContext(user_role="manager", user_name="Bob")
+)
+print(response_manager["messages"][-1].content)
+
+print("\n" + "=" * 70)
+print("EMPLOYEE USER")
+print("=" * 70)
+response_employee = agent.invoke(
+    {"messages": [{"role": "user", "content": "What can I do?"}]},
+    context=UserContext(user_role="employee", user_name="Charlie")
+)
+print(response_employee["messages"][-1].content)
+```
+
+```
+Dynamic Prompt Based on Conversation History
+
+from langchain.agents import create_agent
+from langchain.agents.middleware import dynamic_prompt
+
+@dynamic_prompt
+def history_based_prompt(request):
+    """Prompt changes based on conversation length"""
+    messages = request.state["messages"]
+    message_count = len(messages)
+    
+    if message_count == 1:
+        # First message - be extra friendly
+        return "You are a friendly assistant. Welcome the user warmly!"
+    
+    elif message_count < 5:
+        # Early conversation - help guide
+        return "You are a helpful guide. Help the user get started."
+    
+    elif message_count < 15:
+        # Mid conversation - be more direct
+        return "You are a professional assistant. Be direct and efficient."
+    
+    else:
+        # Long conversation - assume expertise
+        return "You are an expert. Assume the user knows basics. Be advanced."
+
+agent = create_agent(
+    model=model,
+    tools=[my_tool],
+    middleware=[history_based_prompt]
+)
+
+# First message - friendly tone
+response1 = agent.invoke({"messages": [{"role": "user", "content": "Hello"}]})
+
+# Later messages - more advanced tone
+messages = response1["messages"]
+messages.append({"role": "user", "content": "Next question"})
+response2 = agent.invoke({"messages": messages})
+# Prompt automatically changes to more advanced
+```
+
+ ```
+Dynamic Prompt Based on Message Content
+
+from langchain.agents import create_agent
+from langchain.agents.middleware import dynamic_prompt
+
+@dynamic_prompt
+def content_based_prompt(request):
+    """Prompt changes based on what user is asking"""
+    latest_message = request.state["messages"][-1]
+    content = latest_message.get("content", "").lower()
+    
+    if "urgent" in content or "emergency" in content:
+        return "URGENT MODE: Prioritize this request. Act fast. Be brief."
+    
+    elif "explain" in content or "teach" in content:
+        return "EDUCATION MODE: Be thorough. Explain concepts. Use examples."
+    
+    elif "quick" in content or "fast" in content:
+        return "SPEED MODE: Give the shortest accurate answer. No fluff."
+    
+    else:
+        return "NORMAL MODE: Be balanced. Helpful but concise."
+
+agent = create_agent(
+    model=model,
+    tools=[my_tool],
+    middleware=[content_based_prompt]
+)
+
+# Urgent request - fast response
+agent.invoke({"messages": [{"role": "user", "content": "URGENT: Fix this now!"}]})
+
+# Learning request - detailed response
+agent.invoke({"messages": [{"role": "user", "content": "Explain how this works"}]})
+
+# Quick request - brief response
+agent.invoke({"messages": [{"role": "user", "content": "Quick answer?"}]})
+```
+
+```
+Dynamic Prompt Based on Time
+
+from langchain.agents import create_agent
+from langchain.agents.middleware import dynamic_prompt
+from datetime import datetime
+
+@dynamic_prompt
+def time_based_prompt(request):
+    """Prompt changes based on time of day"""
+    hour = datetime.now().hour
+    
+    if 6 <= hour < 12:
+        return "Good morning! You are energetic and ready to help. Be enthusiastic!"
+    
+    elif 12 <= hour < 17:
+        return "It's afternoon. You are focused and professional. Be efficient."
+    
+    elif 17 <= hour < 21:
+        return "It's evening. You are helpful but winding down. Be friendly."
+    
+    else:
+        return "It's late. You are calm and measured. Keep responses concise."
+
+agent = create_agent(
+    model=model,
+    tools=[my_tool],
+    middleware=[time_based_prompt]
+)
+
+# Morning - enthusiastic
+agent.invoke({"messages": [{"role": "user", "content": "Hello!"}]})
+
+# Night - calm
+agent.invoke({"messages": [{"role": "user", "content": "Hello!"}]})
+
+```
 
 
 
