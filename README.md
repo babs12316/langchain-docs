@@ -553,6 +553,164 @@ Flow of tool execution
             │ to user              │
             └──────────────────────┘
 
+
+
+
+
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 1: USER INVOKES AGENT                                      │
+│ agent.invoke({"messages": [{"role": "user", "content": "..."}]})│
+└──────────────────────┬──────────────────────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────┐
+        │ STEP 2: AGENT STARTS PROCESSING  │
+        │ - Reads user message             │
+        │ - Processes through LLM          │
+        └──────────────┬───────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────┐
+        │ STEP 3: AGENT DECIDES TO CALL TOOL   │
+        │ Agent thinks: "I need to call tool X"│
+        │ Gathers:                             │
+        │ - Tool name: "get_weather"           │
+        │ - Tool args: {"city": "NYC"}         │
+        │ - Tool call ID: "call_abc123"        │
+        └──────────────┬──────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 4: LANGCHAIN CREATES REQUEST OBJECT │
+        │                                          │
+        │ request = {                              │
+        │   tool_call: {                           │
+        │     "id": "call_abc123",                 │
+        │     "name": "get_weather",               │
+        │     "args": {"city": "NYC"}              │
+        │   },                                     │
+        │   runtime: {                             │
+        │     state: {...},                        │
+        │     context: {...},                      │
+        │     store: {...}                         │
+        │   }                                      │
+        │ }                                        │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 5: @wrap_tool_call INTERCEPTS       │
+        │ Middleware activates!                    │
+        │ Calls: your_middleware(request, handler) │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 6: YOUR MIDDLEWARE RUNS (try block) │
+        │                                          │
+        │ @wrap_tool_call                          │
+        │ def my_middleware(request, handler):     │
+        │     try:                                 │
+        │         # ← YOU ARE HERE                 │
+        │         # Can inspect request:           │
+        │         # - request.tool_call["name"]   │
+        │         # - request.tool_call["args"]   │
+        │         # - request.runtime.state       │
+        │         # - request.runtime.context     │
+        │                                          │
+        │         result = handler(request)        │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 7: CALL handler(request)            │
+        │ This is the gate to actual tool          │
+        │ handler = function that executes tool    │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 8: TOOL EXECUTES                    │
+        │ @tool                                    │
+        │ def get_weather(city: str) -> str:       │
+        │     # Tool function runs here            │
+        │     if not city:                         │
+        │         raise ValueError("Empty city")   │
+        │     return f"Weather in {city}: Sunny"   │
+        └──────────────┬──────────────────────────┘
+                       │
+          ┌────────────┴────────────┐
+          ↓                         ↓
+    ✅ SUCCESS              ❌ EXCEPTION RAISED
+    Tool returns result     Tool raises error
+          │                         │
+          ↓                         ↓
+    "Weather in NYC:        ValueError:
+     Sunny"                 "Empty city"
+          │                         │
+          ↓                         ↓
+    ┌─────────────────┐    ┌──────────────────┐
+    │ STEP 9a:        │    │ STEP 9b:         │
+    │ SUCCESS PATH    │    │ ERROR PATH       │
+    │                 │    │                  │
+    │ result = "..."  │    │ Exception caught │
+    │                 │    │ except Exception │
+    │ Return result   │    │ as e:            │
+    │ (auto-wrapped   │    │                  │
+    │  in ToolMessage)│    │ Create error     │
+    │                 │    │ ToolMessage      │
+    └────────┬────────┘    └────────┬─────────┘
+             │                      │
+             ↓                      ↓
+    ┌────────────────────────────────────────┐
+    │ STEP 10: RETURN TO AGENT               │
+    │ Middleware returns to agent:           │
+    │                                        │
+    │ ✅ Success case:                       │
+    │ ToolMessage(content="Weather....",     │
+    │            tool_call_id="call_...")    │
+    │                                        │
+    │ ❌ Error case:                         │
+    │ ToolMessage(content="Error: ...",      │
+    │            tool_call_id="call_...")    │
+    └────────┬─────────────────────────────┘
+             │
+             ↓
+    ┌────────────────────────────────────┐
+    │ STEP 11: AGENT RECEIVES RESULT     │
+    │ Agent sees:                        │
+    │ - Tool execution succeeded         │
+    │ OR                                 │
+    │ - Tool execution failed (error msg)│
+    │                                    │
+    │ Agent adds to message history:     │
+    │ - ToolMessage with result/error    │
+    └────────┬─────────────────────────┘
+             │
+             ↓
+    ┌────────────────────────────────────┐
+    │ STEP 12: AGENT DECIDES NEXT STEP   │
+    │ Agent thinks:                      │
+    │ "Did tool succeed?"                │
+    │                                    │
+    │ If success:                        │
+    │ - Use result in reasoning          │
+    │ - May call more tools              │
+    │ - Or generate final answer         │
+    │                                    │
+    │ If error:                          │
+    │ - Read error message               │
+    │ - Retry tool OR                    │
+    │ - Try different approach           │
+    └────────┬─────────────────────────┘
+             │
+             ↓
+    ┌────────────────────────────────────┐
+    │ STEP 13: FINAL RESPONSE TO USER    │
+    │ Agent responds with final answer   │
+    └────────────────────────────────────┘
+
 ```
 
 Agent follows ReAct pattern. ReAct (Reasoning + Acting) is a pattern where the agent thinks through a problem step-by-step, then takes actions (calls tools), then reasons again   based on the results.  
@@ -706,6 +864,252 @@ Function generates prompt based on:
 Generated prompt is used
         ↓
 Agent behaves according to dynamic prompt
+
+
+Request Flow in Dynamic Prompt
+
+
+User invokes agent
+        ↓
+@dynamic_prompt INTERCEPTS (before model call)
+        ↓
+request created with:
+├── request.messages (conversation history)
+├── request.state (agent state)
+└── request.runtime (context, store)
+        ↓
+your_dynamic_prompt(request)
+        ↓
+READ request data to generate prompt
+        ↓
+RETURN string (system prompt)
+        ↓
+System prompt sent to model
+        ↓
+Model processes with dynamic prompt
+        ↓
+Model generates response
+
+
+
+
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 1: USER INVOKES AGENT                                      │
+│ agent.invoke(                                                   │
+│     {"messages": [{"role": "user", "content": "Explain AI"}]},  │
+│     context=UserContext(user_level="beginner")                  │
+│ )                                                               │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────┐
+        │ STEP 2: AGENT STARTS PROCESSING  │
+        │ - Receives user input            │
+        │ - Reads provided context         │
+        │ - Prepares to call LLM           │
+        └──────────────┬───────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 3: ABOUT TO CALL MODEL              │
+        │ Agent has:                               │
+        │ - User messages: [HumanMessage(...)]     │
+        │ - User context: UserContext(...)         │
+        │ - Agent state: {...}                     │
+        │                                          │
+        │ Thinks: "I need to call the LLM now"     │
+        │ But BEFORE calling, middleware intercepts│
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 4: LANGCHAIN CREATES REQUEST OBJECT │
+        │                                          │
+        │ request = {                              │
+        │   messages: [                            │
+        │     HumanMessage(...),                   │
+        │     AIMessage(...),                      │
+        │     ...                                  │
+        │   ],                                     │
+        │   state: {                               │
+        │     "messages": [...],                   │
+        │     "custom_field": "value"              │
+        │   },                                     │
+        │   runtime: {                             │
+        │     context: UserContext(...),           │
+        │     store: InMemoryStore(...),           │
+        │     state: {...}                         │
+        │   }                                      │
+        │ }                                        │
+        │                                          │
+        │ This request contains ALL info about:    │
+        │ - What will be sent to model             │
+        │ - Who is sending it (context)            │
+        │ - What state they're in                  │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 5: @dynamic_prompt INTERCEPTS       │
+        │ Middleware activates!                    │
+        │ Calls: your_middleware(request)          │
+        │                                          │
+        │ NOTE: NO handler parameter!              │
+        │ NO try/except needed                     │
+        │ Just return a string (the prompt)        │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 6: YOUR MIDDLEWARE RUNS             │
+        │                                          │
+        │ @dynamic_prompt                          │
+        │ def my_middleware(request):              │
+        │     # ← YOU ARE HERE                     │
+        │     # Can inspect request:               │
+        │     # - request.messages                 │
+        │     # - request.state                    │
+        │     # - request.runtime.context          │
+        │                                          │
+        │     # DECIDE what prompt to generate     │
+        │     if condition:                        │
+        │         return "Expert prompt"           │
+        │     else:                                │
+        │         return "Beginner prompt"         │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 7: INSPECT REQUEST DATA             │
+        │                                          │
+        │ Get messages from request:               │
+        │ messages = request.messages              │
+        │ └─ List of Message objects               │
+        │    - HumanMessage                        │
+        │    - AIMessage                           │
+        │    - ToolMessage                         │
+        │    - etc.                                │
+        │                                          │
+        │ Get state from request:                  │
+        │ state = request.state                    │
+        │ └─ Current agent state dict              │
+        │    - "messages": [...]                   │
+        │    - "topic": "Python"                   │
+        │    - "user_level": "beginner"            │
+        │                                          │
+        │ Get context from request:                │
+        │ context = request.runtime.context        │
+        │ └─ User-provided context object          │
+        │    - user_level = "beginner"             │
+        │    - user_name = "Alice"                 │
+        │    - loyalty_tier = "gold"               │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 8: MAKE DECISIONS BASED ON DATA     │
+        │                                          │
+        │ Check 1: Who is the user?                │
+        │ if context.user_level == "expert":       │
+        │     → Use expert prompt                  │
+        │ else:                                    │
+        │     → Use beginner prompt                │
+        │                                          │
+        │ Check 2: How long is conversation?       │
+        │ if len(messages) > 10:                   │
+        │     → Use concise prompt                 │
+        │ else:                                    │
+        │     → Use detailed prompt                │
+        │                                          │
+        │ Check 3: What are they asking?           │
+        │ if "urgent" in messages[-1].content:     │
+        │     → Use speed prompt                   │
+        │ elif "explain" in messages[-1].content:  │
+        │     → Use educational prompt             │
+        │                                          │
+        │ Combine all checks...                    │
+        │ Generated Prompt = "..."                 │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 9: RETURN GENERATED PROMPT          │
+        │                                          │
+        │ return """You are an expert assistant.   │
+        │ Provide technical responses with         │
+        │ advanced terminology and deep analysis."""│
+        │                                          │
+        │ Returned as: STRING (not object)         │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 10: LANGCHAIN PREPARES MODEL INPUT  │
+        │                                          │
+        │ Combines:                                │
+        │ 1. Generated system_prompt (from above)  │
+        │ 2. User messages (from request)          │
+        │                                          │
+        │ Final input to model:                    │
+        │ [                                        │
+        │   SystemMessage(content="Expert..."),    │
+        │   HumanMessage(content="Explain AI"),    │
+        │   ...                                    │
+        │ ]                                        │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 11: MODEL RECEIVES INPUT            │
+        │                                          │
+        │ Model now knows:                         │
+        │ "I'm an expert assistant."               │
+        │ "Answer with technical depth."           │
+        │ "Provide advanced analysis."             │
+        │                                          │
+        │ User asked: "Explain AI"                 │
+        │                                          │
+        │ Model generates response considering:    │
+        │ - The dynamic system prompt              │
+        │ - The user's expertise level             │
+        │ - Previous conversation history          │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 12: MODEL PROCESSES & RESPONDS      │
+        │                                          │
+        │ Model output (tailored to prompt):       │
+        │ "Artificial Intelligence represents...   │
+        │  In machine learning, neural networks    │
+        │  utilize backpropagation algorithms...   │
+        │  [Advanced technical explanation]"       │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 13: RESPONSE ADDED TO HISTORY       │
+        │                                          │
+        │ Update messages:                         │
+        │ messages.append(                         │
+        │   AIMessage(content="AI represents...")  │
+        │ )                                        │
+        │                                          │
+        │ New state:                               │
+        │ [                                        │
+        │   HumanMessage("Explain AI"),            │
+        │   AIMessage("AI represents... [expert]") │
+        │ ]                                        │
+        └──────────────┬──────────────────────────┘
+                       │
+                       ↓
+        ┌──────────────────────────────────────────┐
+        │ STEP 14: FINAL RESPONSE TO USER          │
+        │                                          │
+        │ User receives expert-level explanation   │
+        │ because dynamic prompt was generated     │
+        │ based on their context (user_level=...) │
+        └──────────────────────────────────────────┘
 
 ```
 
