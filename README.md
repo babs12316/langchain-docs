@@ -1380,6 +1380,66 @@ agent.invoke({"messages": [{"role": "user", "content": "Hello!"}]})
 
 ```
 
+Differnce between result state and context
+
+```
+Use context for:
+# Fixed user/system metadata passed at start
+context=UserContext(
+    user_role="admin",          # ← WHO is using it
+    user_id="user_123",         # ← WHO identifier
+    organization="TechCorp",    # ← Organization context
+    security_level="high"       # ← Access level
+)
+
+# In @dynamic_prompt:
+if context.user_role == "admin":
+    # Admin-specific prompt
+else:
+    # User-specific prompt
+
+Use state for:
+# Conversation-specific data built during execution
+{
+    "messages": [...],              # Conversation history
+    "request_type": "search",       # What type of request
+    "session_id": "sess_123",       # Session tracking
+    "error_count": 2,               # Error tracking
+    "conversation_stage": 5         # Progress tracking
+}
+
+# In @dynamic_prompt:
+request_type = state.get("request_type")
+error_count = state.get("error_count")
+
+if error_count > 3:
+    # Error recovery prompt
+
+
+Aspect	                                 Context          	      State
+What it is	                              User metadata	           Conversation data
+When passed	                              At invoke time (once)   	In invoke input
+Can change	                               ❌ No (immutable)	      ✅ Yes (mutable)
+Access in code	                          request.runtime.context	   request.state
+Typical data	                            user_role, user_id, org    messages, request_type, error_count
+Lifespan	                                 Entire conversation	       Single execution
+Example usage	                             Permission checking	       Progress tracking
+
+
+
+agent.invoke(                                              │
+│      {                                                      │
+│          "messages": [...],         ← STATE                │
+│          "request_type": "search"   ← STATE                │
+│      },                                                     │
+│      context=UserContext(            ← CONTEXT             │
+│          user_role="admin",                                │
+│          user_name="Alice"                                 │
+│      )                                                      │
+│  )                           
+
+```
+
 
 
 
