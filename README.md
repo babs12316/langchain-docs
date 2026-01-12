@@ -841,7 +841,19 @@ Context
 Current conditions    
 
 For more advanced use cases where you need to modify the system prompt based on runtime context or agent state, you can use middleware.    
-The @dynamic_prompt decorator creates middleware that generates system prompts based on the model request  
+The @dynamic_prompt decorator creates middleware that generates system prompts based on the model request    
+
+Agent state is the data that flows through an agent's execution — it includes messages, custom fields, and any information the agent   needs to track during its lifecycle.  
+
+Agent state is a DICTIONARY that contains:  
+agent_state = {  
+    "messages": [...],           # Conversation history (ALWAYS present)  
+    "user_preferences": {...},   # Custom field (YOU define)  
+    "conversation_count": 5,     # Custom field (YOU define)  
+    "error_count": 0             # Custom field (YOU define)  
+}  
+
+Agent execution is the process of an agent running from start to finish — it receives input, makes decisions (using middleware, models, and tools), and produces output.
 
 
 ```
@@ -1438,7 +1450,142 @@ agent.invoke(                                              │
 │      )                                                      │
 │  )                           
 
+```  
+
+
+### Agent Invocation  
+To invoke an agent update its state. All agents include a sequence of messages in their state; to invoke the agent, pass a new message:    
+result = agent.invoke(  
+    {"messages": [{"role": "user", "content": "What's the weather in San Francisco?"}]}  
+)   
+
+## Structured output  
+In some situations, you may want the agent to return an output in a specific format.    
+
+Structured output can be achived using ToolStrategy and ProviderStrategy  
+
+ToolStrategy    
+ToolStrategy uses artificial tool calling to generate structured output. This works with any model that supports tool calling:  
+
 ```
+from pydantic import BaseModel
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
+
+
+class ContactInfo(BaseModel):
+    name: str
+    email: str
+    phone: str
+
+agent = create_agent(
+    model="gpt-4o-mini",
+    tools=[search_tool],
+    response_format=ToolStrategy(ContactInfo)
+)
+
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Extract contact info from: John Doe, john@example.com, (555) 123-4567"}]
+})
+
+result["structured_response"]
+# ContactInfo(name='John Doe', email='john@example.com', phone='(555) 123-4567')
+
+
+```
+
+
+ProviderStrategy  
+ProviderStrategy uses the model provider’s native structured output generation. This is more reliable but only works with providers   that support native structured output (e.g., OpenAI):  
+
+```
+from langchain.agents.structured_output import ProviderStrategy
+
+agent = create_agent(
+    model="gpt-4o",
+    response_format=ProviderStrategy(ContactInfo)
+)
+```
+
+## Memory
+Agents maintain conversation history automatically through the message state.   
+You can also configure the agent to use a custom state schema to remember additional information during the conversation.  
+
+Information stored in the state can be thought of as the short-term memory of the agent:  
+so short term memory = messages + custom_fields + any other field in state   
+
+Custom state schemas must extend AgentState as a TypedDict.  
+
+There are two ways to define custom state:  
+Via middleware (preferred)  
+Via state_schema on create_agent  
+
+### Defining custom state  via middleware
+
+```
+from langchain.agents import AgentState
+from langchain.agents.middleware import AgentMiddleware
+from typing import Any
+
+# ========== 1. Custom State (extends AgentState) ==========
+class CustomState(AgentState):
+    user_preferences: dict  # ← Add your custom field
+
+# ========== 2. Custom Middleware (extends AgentMiddleware) ==========
+class CustomMiddleware(AgentMiddleware):
+    state_schema = CustomState    # ← Use custom state
+    tools = [tool1, tool2]        # ← Define tools here
+
+    def before_model(self, state: CustomState, runtime) -> dict[str, Any] | None:
+        # ← Custom logic before model call
+        ...
+
+# ========== 3. Create agent with middleware ==========
+agent = create_agent(
+    model,
+    tools=tools,                    # Global tools
+    middleware=[CustomMiddleware()] # Custom middleware
+)
+
+# ========== 4. Invoke with custom state ==========
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "I prefer technical explanations"}],
+    "user_preferences": {"style": "technical", "verbosity": "detailed"},  # ← Custom field
+})
+```
+
+before_model and after_model are middleware methods that LangChain calls automatically at the right time — you don't call them   explicitly.  
+
+### Defining custom state via state_schema
+Use the state_schema parameter as a shortcut to define custom state that is only used in tools.
+
+
+```
+from langchain.agents import AgentState
+
+
+class CustomState(AgentState):
+    user_preferences: dict
+
+agent = create_agent(
+    model,
+    tools=[tool1, tool2],
+    state_schema=CustomState
+)
+# The agent can now track additional state beyond messages
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "I prefer technical explanations"}],
+    "user_preferences": {"style": "technical", "verbosity": "detailed"},
+})
+
+```
+
+so if custom state will be used in middelware then define custom state via middelware    
+if custom state will be used in tool only then define custom state via state_schema  
+
+​
+
+
 
 
 
