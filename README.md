@@ -1581,52 +1581,169 @@ result = agent.invoke({
 ```
 
 so if custom state will be used in middelware then define custom state via middelware    
-if custom state will be used in tool only then define custom state via state_schema  
+if custom state will be used in tool only then define custom state via state_schema    
 
+### Streaming
+
+We’ve seen how the agent can be called with invoke to get a final response. If the agent executes multiple steps, this may take a   while. To show intermediate progress, we can stream back messages as they occur. 
+
+```
+for chunk in agent.stream({
+    "messages": [{"role": "user", "content": "Search for AI news and summarize the findings"}]
+}, stream_mode="values"):
+    # Each chunk contains the full state at that point
+    latest_message = chunk["messages"][-1]
+    if latest_message.content:
+        print(f"Agent: {latest_message.content}")
+    elif latest_message.tool_calls:
+        print(f"Calling tools: {[tc['name'] for tc in latest_message.tool_calls]}")
+
+```
+
+### Middelware  
+Middleware provides powerful extensibility for customizing agent behavior at different stages of execution.  
+You can use middleware to:  
+
+Process state before the model is called (e.g., message trimming, context injection)    
+Modify or validate the model’s response (e.g., guardrails, content filtering)  
+Handle tool execution errors with custom logic
+Implement dynamic model selection based on state or context    
+Add custom logging, monitoring, or analytics   
+```
+# 1. Process State Before Model (Message Trimming)
+from langchain.agents.middleware import before_model
+
+@before_model
+def trim_messages(state, runtime):
+    """Keep only last 10 messages"""
+    state["messages"] = state["messages"][-10:]
+    return state
+
+# 2. Modify/Validate Model Response (Guardrails)
+@after_model
+def validate_response(state, runtime):
+    """Block unsafe content"""
+    if "harmful" in state["messages"][-1].content:
+        state["messages"][-1].content = "Sorry, I can't help with that."
+    return state
+
+# 3. Handle Tool Errors
+from langchain.agents.middleware import wrap_tool_call
+from langchain.messages import ToolMessage
+
+@wrap_tool_call
+def handle_errors(request, handler):
+    try:
+        return handler(request)
+    except Exception as e:
+        return ToolMessage(content=f"Error: {e}", tool_call_id=request.tool_call["id"])
+
+# 4. Dynamic Model Selection
+@wrap_model_call
+def select_model(request, handler):
+    if len(request.messages) > 20:
+        request.model = ChatOpenAI(model="gpt-4o")
+    else:
+        request.model = ChatOpenAI(model="gpt-4o-mini")
+    return handler(request)
+
+# 5. Custom Logging
+@before_agent
+def log_start(state, runtime):
+    print(f"Agent started for user: {runtime.context.user_id}")
+    return None
+
+@after_agent
+def log_end(state, runtime):
+    print(f"Agent finished. Messages: {len(state['messages'])}")
+    return None
+
+# Usage
+agent = create_agent(
+    model=model,
+    middleware=[
+        trim_messages,
+        validate_response,
+        handle_errors,
+        select_model,
+        log_start,
+        log_end
+    ]
+)
+```
 ​
+# Model  
+
+LLMs are powerful AI tools that can interpret and generate text like humans. They’re versatile enough to write content, translate   languages, summarize, and answer questions without needing specialized training for each task.  
+
+Model: Can see tools but needs manual execution.    
+Agent: Can see + execute tools + manage state automatically.  
+
+### Basic usage  
+Models can be utilized in two ways:  
+With agents - Models can be dynamically specified when creating an agent.  
+Standalone - Models can be called directly (outside of the agent loop) for tasks like text generation, classification, or extraction   without the need for an agent framework.  
 
 
-
-
-
-
-
-
-
-  
-
-
-
-#### Invocation   
-A chat model must be invoked to generate an output. There are three primary invocation methods, each suited to different use cases.  
-Invoke, Stream, Batch  
-  
-###### Invoke  
-The most straightforward way to call a model is to use invoke() with a single message or a list of messages.
+Initialize a model   
+The easiest way to get started with a standalone model in LangChain is to use init_chat_model to initialize one from a chat model   provider of your choice   
 
 ```
 from langchain.chat_models import init_chat_model
 
-llm = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=30, temperature=0)
+model = init_chat_model("gpt-4.1")
 
-response = llm.invoke("who is president of usa?")
-
-print(f"president is {response}")
-
-output: reponse is an AI message and has following format
-{
-    "content": "...", # contains AI answer
-    "additional_kwargs": {},  # arguments/call to tool
-    "response_metadata": {...}, # cotains info about response such as created_at, total_duration, prompt_eval_duration
-    "id": "...",
-    "usage_metadata": {...} # contains models token info such as input_tokens, output_tokens, total_tokens
-}
+response = model.invoke("Why do parrots talk?")
 ```
-A list of messages can be provided to a model to represent conversation history. Each message has a role that models use to indicate   who sent the message in the conversation.  
-2 ways to passing list of messages to model  
-```
-from langchain.messages import HumanMessage, AIMessage, SystemMessage
 
+For init_chat_model you can pass following paramters  
+model  string required  
+The name or identifier of the specific model you want to use with a provider. You can also specify both the model and its provider in   a single argument using the ’:’ format, for example, ‘openai:o1’.  
+​
+api_key string  
+The key required for authenticating with the model’s provider. This is usually issued when you sign up for access to the model. Often   accessed by setting an environment variable.  
+​
+temperature number  
+Controls the randomness of the model’s output. A higher number makes responses more creative; lower ones make them more deterministic.  
+​
+max_tokens number  
+Limits the total number of tokens in the response, effectively controlling how long the output can be.  
+​
+timeout number  
+The maximum time (in seconds) to wait for a response from the model before canceling the request.  
+​
+max_retries number  
+The maximum number of attempts the system will make to resend a request if it fails due to issues like network timeouts or rate limits.  
+
+```
+model = init_chat_model(
+    "claude-sonnet-4-5-20250929",
+    # Kwargs passed to the model:
+    temperature=0.7,
+    timeout=30,
+    max_tokens=1000,
+)
+```
+**kwargs stands for keyword arguments.  
+It lets a function accept any number of named arguments that weren’t explicitly listed in the function signature.  
+
+
+Invocation  
+A chat model must be invoked to generate an output. There are three primary invocation methods, each suited to different use cases.    
+
+Invoke  
+The most straightforward way to call a model is to use invoke() with a single message or a list of messages.  
+
+```
+response = model.invoke("Why do parrots have colorful feathers?")
+print(response)
+
+```
+
+
+A list of messages can be provided to a chat model to represent conversation history. Each message has a role that models use to   indicate who sent the message in the conversation.  
+
+```
 conversation = [
     {"role": "system", "content": "You are a helpful assistant that translates English to French."},
     {"role": "user", "content": "Translate: I love programming."},
@@ -1636,10 +1753,11 @@ conversation = [
 
 response = model.invoke(conversation)
 print(response)  # AIMessage("J'adore créer des applications.")
+
 ```
 
 ```
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain.messages import HumanMessage, AIMessage, SystemMessage
 
 conversation = [
     SystemMessage("You are a helpful assistant that translates English to French."),
@@ -1651,143 +1769,57 @@ conversation = [
 response = model.invoke(conversation)
 print(response)  # AIMessage("J'adore créer des applications.")
 
-
 ```
 
-###### Stream
+Stream  
+Most models can stream their output content while it is being generated.  
+By displaying output progressively, streaming significantly improves user experience, particularly for longer responses.  
 
-Most models can stream their output content while it is being generated. By displaying output progressively, **streaming significantly   improves user experience**, particularly for longer responses  
-
-As opposed to invoke(), which returns a single AIMessage after the model has finished generating its full response, stream() returns   multiple AIMessageChunk objects, each containing a portion of the output text. Importantly, each chunk in a stream is designed to be   gathered into a full message via summation  
+Calling stream() returns an iterator that yields output chunks as they are produced.   
+You can use a loop to process each chunk in real-time:  
 
 ```
-from langchain.chat_models import init_chat_model
+for chunk in model.stream("Why do parrots have colorful feathers?"):
+    print(chunk.text, end="|", flush=True)
+```
+As opposed to invoke(), which returns a single AIMessage after the model has finished generating its full response, stream() returns   multiple AIMessageChunk objects, each containing a portion of the output text. Importantly, each chunk in a stream is designed to be   gathered into a full message via summation:  
 
-model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
 
-full = None
-
-for chunk in model.stream("What is color of sun?"):
+```
+full = None  # None | AIMessageChunk
+for chunk in model.stream("What color is the sky?"):
     full = chunk if full is None else full + chunk
     print(full.text)
 
+# The
+# The sky
+# The sky is
+# The sky is typically
+# The sky is typically blue
+# ...
 
 print(full.content_blocks)
-
-
-#output
-
-The
-The color
-The color of
-The color of the
-The color of the Sun
-The color of the Sun is
-The color of the Sun is actually
-The color of the Sun is actually white
-
+# [{"type": "text", "text": "The sky is typically blue..."}]
 
 ```
-
-###### Streaming events  
-LangChain chat models can also stream semantic events using astream_events().  
-Just like a frontend component has lifecycle events:  
-  
-onMount  
-onUpdate  
-onDestroy  
-
-…an AI model in LangChain has semantic lifecycle events such as:  
-on_start  
-on_token    
-on_thinking_start  
-on_tool_start  
-on_tool_end   
-on_message  
-on_end    
-on_error  
-  
-These describe what stage of the process the model/agent is currently in.  
+Batch  
+Batching a collection of independent requests to a model can significantly improve performance and reduce costs,  
+as the processing can be done in parallel:  
 
 ```
-from langchain.chat_models import init_chat_model
-import asyncio
-
-model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
-
-
-async def myfunc():
-    async for event in model.astream_events("Hello"):
-
-        if event["event"] == "on_chat_model_start":
-            print(f"Input {event['data']['input']}")
-        elif event["event"] == "on_chat_model_stream":
-            print(f"Token {event['data']['chunk'].text}")
-        elif event["event"] == "on_chat_model_end":
-            print(f"Full messages {event['data']['output'].text}")
-        else:
-            pass
-
-
-if __name__ == "__main__":
-    asyncio.run(myfunc())
-
-
-Input Hello
-Token Hello
-Token !
-Token  How
-Token  are
-Token  you
-Token  today
-Token ?
-Token  Is
-Token  there
-Token  something
-Token  I
-Token  can
-Token  help
-Token  you
-Token  with
-Token  or
-Token  would
-Token  you
-Token  like
-Token  to
-Token  chat
-Token ?
-Token 
-Token 
-Full messages Hello! How are you today? Is there something I can help you with or would you like to chat?
-
-```
-
-##### Batch
-Batching a collection of independent requests to a model can significantly improve performance and reduce costs, as the processing can   be done in parallel:  
-
-```
-from langchain.chat_models import init_chat_model
-
-model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
-
 responses = model.batch([
     "Why do parrots have colorful feathers?",
     "How do airplanes fly?",
     "What is quantum computing?"
 ])
-
 for response in responses:
     print(response)
 ```
-
-By default, batch() will only return the final output for the entire batch. If you want to receive the output for each individual  
-input as it finishes generating, you can stream results with batch_as_completed():
+  
+By default, batch() will only return the final output for the entire batch. If you want to receive the output for each individual   input as it finishes generating, you can stream results with batch_as_completed():  
+Yield batch responses upon completion  
 
 ```
-from langchain.chat_models import init_chat_model
-
-model = init_chat_model(model="llama3.1", model_provider="ollama", num_predict=100, temperature=0)
-
 for response in model.batch_as_completed([
     "Why do parrots have colorful feathers?",
     "How do airplanes fly?",
@@ -1796,56 +1828,87 @@ for response in model.batch_as_completed([
     print(response)
 
 ```
-When processing a large number of inputs using batch() or batch_as_completed(), you may want to control the maximum number of parallel   calls. This can be done by setting the max_concurrency attribute in the RunnableConfig dictionary.  
+
+When processing a large number of inputs using batch() or batch_as_completed(), you may want to control   
+the maximum number of parallel calls. This can be done by setting the max_concurrency attribute in the RunnableConfig dictionary.  
+
 ```
+
 model.batch(
     list_of_inputs,
     config={
         'max_concurrency': 5,  # Limit to 5 parallel calls
     }
 )
+```
+
+Tool calling   
+
+Models can request to call tools that perform tasks such as fetching data from a database, searching the web, or running code.     
+To make tools that you have defined available for use by a model, you must bind them using bind_tools.   
+Some model providers offer built-in tools that can be enabled via model or invocation parameters (e.g. ChatOpenAI, ChatAnthropic).  
+
+```
+from langchain.tools import tool
+
+@tool
+def get_weather(location: str) -> str:
+    """Get the weather at a location."""
+    return f"It's sunny in {location}."
+
+
+model_with_tools = model.bind_tools([get_weather])  
+
+response = model_with_tools.invoke("What's the weather like in Boston?")
+for tool_call in response.tool_calls:
+    # View tool calls made by the model
+    print(f"Tool: {tool_call['name']}")
+    print(f"Args: {tool_call['args']}")
+```
+Forcing tool calls  
+
+By default, the model has the freedom to choose which bound tool to use based on the user’s input. However, you might want to force     choosing a tool, ensuring the model uses either a particular tool or any tool from a given list:    
+
+```
+model_with_tools = model.bind_tools([tool_1], tool_choice="any")
 
 ```
 
-
+Force use of specific tool  
 ```
-
-A model with bind_tools() is tool-aware but not autonomous. The LLM sees the tools and can decide whether to call them, but YOU write the loop that decides what happens next. You have to manually check if a tool was called, execute it, pass the result back, and repeat until the model stops using tools.
-
-An agent wraps this entire loop for you. You give it tools and a goal, and it automatically:
-Side-by-Side Comparison
-Task	            bind_tools()	       Agent
-Model sees tools 	✅ Automatic	✅ Automatic
-View tool calls  	✅ Automatic	✅ Automatic (internal)
-Execute tools   	❌ Manual	    ✅ Automatic
-Loop management 	❌ Manual	    ✅ Automatic
-Error handling	  ❌ Manual	    ✅ Automatic (
-State management	❌ Manual	    ✅ Automaticù
-
-
+model_with_tools = model.bind_tools([tool_1], tool_choice="tool_1")
 ```
 
 
+Parallel tool calls  
+
+Many models support calling multiple tools in parallel when appropriate.    
+This allows the model to gather information from different sources simultaneously.  
 ```
+model_with_tools = model.bind_tools([get_weather])
 
-Decision Table
-Need	Model + bind_tools()	Agent
-Single tool call only	✅ Perfect	Overkill
-Custom execution logic	✅ Full control	Limited
-Multi-step reasoning	❌ Manual loop	✅ Automatic
-Unknown tool count	❌ Error-prone	✅ Handles it
-Middleware/hooks	❌ Not available	✅ Full support
-Simplicity	❌ Code per tool call	✅ One call
-Server-side tools	✅ Simple	✅ Works too
+response = model_with_tools.invoke(
+    "What's the weather in Boston and Tokyo?"
+)
 
+
+# The model may generate multiple tool calls
+print(response.tool_calls)
+# [
+#   {'name': 'get_weather', 'args': {'location': 'Boston'}, 'id': 'call_1'},
+#   {'name': 'get_weather', 'args': {'location': 'Tokyo'}, 'id': 'call_2'},
+# ]
+
+
+# Execute all tools (can be done in parallel with async)
+results = []
+for tool_call in response.tool_calls:
+    if tool_call['name'] == 'get_weather':
+        result = get_weather.invoke(tool_call)
+    ...
+    results.append(result)
 
 ```
-
-
-
-
-
-
 
 
 
