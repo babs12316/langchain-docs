@@ -1910,10 +1910,268 @@ for tool_call in response.tool_calls:
 
 ```
 
+Structured output
+
+Models can be requested to provide their response in a format matching a given schema. This is useful for ensuring the output can be easily parsed and used in subsequent   processing. LangChain supports multiple schema types and methods for enforcing structured output.  
+
+ ```
+from pydantic import BaseModel, Field
+
+class Movie(BaseModel):
+    """A movie with details."""
+    title: str = Field(..., description="The title of the movie")
+    year: int = Field(..., description="The year the movie was released")
+    director: str = Field(..., description="The director of the movie")
+    rating: float = Field(..., description="The movie's rating out of 10")
+
+model_with_structure = model.with_structured_output(Movie)
+response = model_with_structure.invoke("Provide details about the movie Inception")
+print(response)  # Movie(title="Inception", year=2010, director="Christopher Nolan", rating=8.8)
+```  
+
+Message output alongside parsed structure  
+
+It can be useful to return the raw AIMessage object alongside the parsed representation to access response metadata such as token counts.   
+To do this, set include_raw=True when calling with_structured_output:  
+
+```  
+model_with_structure = model.with_structured_output(Movie, include_raw=True)
+
+response
+# {
+#     "raw": AIMessage(...),
+#     "parsed": Movie(title=..., year=..., ...),
+#     "parsing_error": None,
+# }
+
+```    
+
+Nested structures  
+
+Schemas can be nested:    
+
+```
+from pydantic import BaseModel, Field
+
+class Actor(BaseModel):
+    name: str
+    role: str
+
+class MovieDetails(BaseModel):
+    title: str
+    year: int
+    cast: list[Actor]
+    genres: list[str]
+    budget: float | None = Field(None, description="Budget in millions USD")
+
+model_with_structure = model.with_structured_output(MovieDetails)
+```  
+
+# Prompt caching  
+Many providers offer prompt caching features to reduce latency and cost on repeat processing of the same tokens. These features can be implicit or explicit:  
+Implicit prompt caching: providers will automatically pass on cost savings if a request hits a cache. Examples: OpenAI and Gemini.  
+Explicit caching: providers allow you to manually indicate cache points for greater control or to guarantee cost savings. Examples:  
+ChatOpenAI (via prompt_cache_key)  
+Anthropic’s AnthropicPromptCachingMiddleware  
+Gemini.  
+AWS Bedrock     
+
+# Features to reduce latency and cost:
+
+Feature       	                        
+Parallel Tool Calls	Multiple tools run simultaneously	, 3 tools: 3s → 1s    
+Streaming	Get tokens as they generate,	User sees response immediately  
+Dynamic Model Selection	Use cheap/fast model when possible,	GPT-4o-mini for simple, GPT-4o for complex  
+Caching	Reuse previous responses	Same query → instant result  
+Prompt Compression	Shorter prompts ,faster	10k → 2k tokens  
+Stateful Execution,	Reuse context	No repeating history   
+Batch Processing	Process multiple at once	100 queries → 1 batch call  
 
 
 
+Cost Reduction  
+Feature	How It Helps	Savings  
+Model Selection	Cheaper models for simple tasks	GPT-4o-mini ($0.15/M) vs GPT-4o ($2.50/M)  
+Caching	Avoid repeat API calls	100% savings on cached  
+Prompt Optimization	Fewer input tokens	50% input cost reduction  
+Output Limits	max_tokens limits	Prevents long responses  
+Batch API	Discounted pricing	25-50% batch discount  
+Token Counting	Track usage	Avoid surprises    
 
 
+Server side tool means using 3rd party tools such as web search
+Server-Side Tools = Provider-Hosted  
+
+```
+# These are SERVER-SIDE tools:
+# OpenAI hosts and runs them for you
+{"type": "web_search"},      # OpenAI's web search
+{"type": "code_interpreter"}, # OpenAI's Python interpreter
+{"type": "file_search"}       # OpenAI's file search
+
+# Provider: OpenAI, Anthropic, Google
+# You: Just specify type string
+# Provider: Executes everything
+
+```  
+Client-Side Tools = Your Tools
+
+```
+# These are CLIENT-SIDE tools:
+@tool
+def search_my_database(query: str) -> str:
+    # YOU run this on your servers
+    return db.query(query)
+
+@tool
+def check_inventory(item_id: str) -> str:
+    # YOU run this
+    return inventory.get(item_id)
+
+```
+
+Server-side tool use  
+Some providers support server-side tool-calling loops: models can interact with web search, code interpreters, and other tools and analyze the results in a single conversational  turn.  
+
+```
+from langchain.chat_models import init_chat_model
+
+model = init_chat_model("gpt-4.1-mini")
+
+tool = {"type": "web_search"}
+model_with_tools = model.bind_tools([tool])
+
+response = model_with_tools.invoke("What was a positive news story from today?")
+response.content_blocks
+```  
 
 
+Rate limiting  
+Many chat model providers impose a limit on the number of invocations that can be made in a given time period. If you hit a rate limit, you will typically receive a rate limit   error response from the provider, and will need to wait before making more requests.  
+LangChain in comes with (an optional) built-in InMemoryRateLimiter.  
+```
+from langchain_core.rate_limiters import InMemoryRateLimiter
+
+rate_limiter = InMemoryRateLimiter(
+    requests_per_second=0.1,  # 1 request every 10s
+    check_every_n_seconds=0.1,  # Check every 100ms whether allowed to make a request
+    max_bucket_size=10,  # Controls the maximum burst size. Burst size is the maximum number of requests allowed in a short time before rate limiting kicks in. max_bucket_size controls this.
+)
+
+model = init_chat_model(
+    model="gpt-5",
+    model_provider="openai",
+    rate_limiter=rate_limiter  
+)
+
+```  
+
+
+Log probabilities  
+Log probabilities show how confident the model is about each token it generates — useful for debugging, confidence scoring, and analysis.  
+Enabling this increases cost as additonal information is send
+```
+model = ChatOpenAI(
+    model="gpt-4o",
+    logprobs=True,      # Enable logprobs
+)
+
+response = model.invoke("What is 2+2?")
+
+# Each token has log probabilities
+for token, logprobs in response.logprobs:
+    print(f"Token: '{token}'")
+    print(f"Logprobs: {logprobs}")
+
+Output
+
+Token: 'The'
+Logprobs: [{'token': 'The', 'logprob': -0.1}, ...]
+
+Token: 'answer'
+Logprobs: [{'token': 'answer', 'logprob': -0.05}, ...]
+
+Token: 'is'
+Logprobs: [{'token': 'is', 'logprob': -0.01}, ...]
+
+Token: '4'
+Logprobs: [{'token': '4', 'logprob': -0.001}, {'token': '5', 'logprob': -2.3}]
+
+
+Your example:
+Token: 'The'     logprob: -0.1   → 90.5% confidence (very confident)
+Token: 'answer'  logprob: -0.05  → 95.1% confidence (extremely confident)
+Token: 'is'      logprob: -0.01  → 99.0% confidence (almost certain)
+Token: '4'       logprob: -0.001 → 99.9% confidence (almost certain)
+Token: '5'       logprob: -2.3   → 10.0% confidence (very unlikely)
+
+Logprob    Probability    Confidence    Meaning
+  0.0           100%       Extremely high
+ -0.1           90.5%        Very high
+ -0.5           60.7%         Medium
+ -1.0           36.8%          Low
+ -2.0           13.5%       Very low
+ -3.0            5.0%      Almost guess
+ -5.0            0.7%      Pure guess
+
+```
+
+
+```
+Confidence Scoring
+
+def get_confidence(response):
+    """Average logprob = model confidence"""
+    avg_logprob = sum(logprob['logprob'] for token in response.logprobs 
+                      for logprob in token.logprobs) / len(response.content)
+    return avg_logprob
+
+confidence = get_confidence(response)
+if confidence < -0.5:
+    print("Low confidence - ask for clarification")
+
+```
+
+```
+Detect Hallucinations
+
+def detect_uncertainty(response):
+    """Find low-confidence tokens"""
+    uncertain_tokens = []
+    for token, logprobs in response.logprobs:
+        top_logprob = logprobs[0]['logprob']
+        if top_logprob < -1.0:  # Low confidence threshold
+            uncertain_tokens.append(token)
+    return uncertain_tokens
+
+```
+
+
+```
+Filter Bad Responses
+
+
+def filter_response(response):
+    """Reject if too uncertain"""
+    avg_confidence = sum(logprob['logprob'] for token in response.logprobs 
+                         for logprob in token.logprobs) / len(response.content)
+    
+    if avg_confidence < -0.3:
+        return None  # Retry
+    return response
+
+```
+
+Invocation config  
+When invoking a model, you can pass additional configuration through the config  
+```
+response = model.invoke(
+    "Tell me a joke",
+    config={
+        "run_name": "joke_generation",      # Custom name for this run
+        "tags": ["humor", "demo"],          # Tags for categorization
+        "metadata": {"user_id": "123"},     # Custom metadata
+        "callbacks": [my_callback_handler], # Callback handlers
+    }
+)
+```
