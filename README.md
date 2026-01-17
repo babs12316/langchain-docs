@@ -2388,6 +2388,389 @@ response.usage_metadata
 ```
 
 
-Streaming and chunks  
-During streaming, you’ll receive AIMessageChunk objects that can be combined into a full message object:  
+Streaming and chunks    
+LangChain's model.stream() yields AIMessageChunk objects incrementally, which you accumulate using + operator to reconstruct the full   AIMessage.  
+
+Unlike model.invoke() that waits for complete response and returns one AIMessage, streaming gives you small AIMessageChunk pieces as   the model generates tokens. Each chunk contains partial text (or content_blocks), and you merge them progressively to build the final   message.  
+
+The code collects chunks in a list while maintaining a running full_message by using the + operator (which calls __add__ on   AIMessageChunk to merge content, tool_calls, etc.):  
+
+```
+from langchain_core.messages import AIMessageChunk
+
+chunks = []          # Optional: store all chunks if needed later
+full_message = None  # Accumulator for merged response
+
+for chunk in model.stream("What color is the sky?"):
+    chunks.append(chunk)
+    print(chunk.text)  # Print incrementally: "The", "The sky", etc.
+    
+    # Merge: first chunk becomes base, subsequent chunks add to it
+    full_message = chunk if full_message is None else full_message + chunk
+
+# After loop: full_message is complete AIMessage-equivalent
+print(full_message.text)
+# "The sky is typically blue on a clear day."
+```
+
+ToolMessage
+ToolMessage is the "answer back" you send to the AI after it asks you to run a tool.  
+
+Here's the simple flow:  
+
+AI says: "Hey, run the search tool with 'iPhone'"  
+This creates an AIMessage with tool_calls=[{name: "search", id: "abc123"}]  
+You run the tool: search("iPhone") → ["iPhone 15", "iPhone 14"]
+You reply with ToolMessage:   
+```
+ToolMessage(
+    content="['iPhone 15', 'iPhone 14']",  # Tool result
+    tool_call_id="abc123"                  # Matches AI's request exactly!
+)
+```
+
+Message content  
+You can think of a message’s content as the payload of data that gets sent to the model. Messages have a content attribute that is   loosely-typed, supporting strings and lists of untyped objects (e.g., dictionaries). This allows support for provider-native   structures directly in LangChain chat models, such as multimodal content and other data.  
+
+Standard content blocks  
+LangChain provides a standard representation for message content that works across providers.  
+Message objects implement a content_blocks property that will lazily parse the content attribute into a standard, type-safe   representation.     
+
+Content blocks were introduced as a new property on messages in LangChain v1 to standardize content formats across providers while   maintaining backward compatibility with existing code.  
+Content blocks are not a replacement for the content property, but rather a new property that can be used to access the content of a    message in a standardized format.    
+
+# Tools
+
+Tools extend what agents can do—letting them fetch real-time data, execute code, query external databases, and take actions in the   world.  
+Under the hood, tools are callable functions with well-defined inputs and outputs that get passed to a chat model. The model decides   when to invoke a tool based on the conversation context, and what input arguments to provide.    
+
+Create tools  
+​
+Basic tool definition  
+The simplest way to create a tool is with the @tool decorator. By default, the function’s docstring becomes the tool’s description   that helps the model understand when to use it:  
+
+```
+from langchain.tools import tool
+
+@tool
+def search_database(query: str, limit: int = 10) -> str:
+    """Search the customer database for records matching the query.
+
+    Args:
+        query: Search terms to look for
+        limit: Maximum number of results to return
+    """
+    return f"Found {limit} results for '{query}'"
+```
+
+Type hints are required as they define the tool’s input schema. The docstring should be informative and concise to help the model   understand the tool’s purpose.  
+
+
+Customize tool properties  
+​
+Custom tool name  
+By default, the tool name comes from the function name. Override it when you need something more descriptive:  
+
+```
+@tool("web_search")  # Custom name
+def search(query: str) -> str:
+    """Search the web for information."""
+    return f"Results for: {query}"
+
+print(search.name)  # web_search
+
+```
+
+Custom tool description   
+Override the auto-generated tool description for clearer model guidance:  
+```
+@tool("calculator", description="Performs arithmetic calculations. Use this for any math problems.")
+def calc(expression: str) -> str:
+    """Evaluate mathematical expressions."""
+    return str(eval(expression))
+```
+
+
+ToolRuntime  
+ToolRuntime gives tools access to "extra info" like user data, memory, and conversation state without the LLM seeing it.   
+
+ToolRuntime: A unified parameter that provides tools access to state, context, store, streaming, config, and tool call ID.  
+
+Accessing state:  
+Tools can access the current graph state using ToolRuntime:  
+```
+from langchain.tools import tool, ToolRuntime
+
+# Access the current conversation state
+@tool
+def summarize_conversation(
+    runtime: ToolRuntime
+) -> str:
+    """Summarize the conversation so far."""
+    messages = runtime.state["messages"]
+
+    human_msgs = sum(1 for m in messages if m.__class__.__name__ == "HumanMessage")
+    ai_msgs = sum(1 for m in messages if m.__class__.__name__ == "AIMessage")
+    tool_msgs = sum(1 for m in messages if m.__class__.__name__ == "ToolMessage")
+
+    return f"Conversation has {human_msgs} user messages, {ai_msgs} AI responses, and {tool_msgs} tool results"
+
+# Access custom state fields
+@tool
+def get_user_preference(
+    pref_name: str,
+    runtime: ToolRuntime  # ToolRuntime parameter is not visible to the model
+) -> str:
+    """Get a user preference value."""
+    preferences = runtime.state.get("user_preferences", {})
+    return preferences.get(pref_name, "Not set")
+
+```
+
+Updating state:  
+Use Command to update the agent’s state or control the graph’s execution flow:  
+```
+from langgraph.types import Command
+from langchain.messages import RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langchain.tools import tool, ToolRuntime
+
+# Update the conversation history by removing all messages
+@tool
+def clear_conversation() -> Command:
+    """Clear the conversation history."""
+
+    return Command(
+        update={
+            "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)],
+        }
+    )
+
+# Update the user_name in the agent state
+@tool
+def update_user_name(
+    new_name: str,
+    runtime: ToolRuntime
+) -> Command:
+    """Update the user's name."""
+    return Command(update={"user_name": new_name})
+
+```
+
+
+Context  
+Access immutable configuration and contextual data like user IDs, session details, or application-specific configuration through   runtime.context.  
+Tools can access runtime context through ToolRuntime:   
+
+```
+from dataclasses import dataclass
+from langchain_openai import ChatOpenAI
+from langchain.agents import create_agent
+from langchain.tools import tool, ToolRuntime
+
+
+USER_DATABASE = {
+    "user123": {
+        "name": "Alice Johnson",
+        "account_type": "Premium",
+        "balance": 5000,
+        "email": "alice@example.com"
+    },
+    "user456": {
+        "name": "Bob Smith",
+        "account_type": "Standard",
+        "balance": 1200,
+        "email": "bob@example.com"
+    }
+}
+
+@dataclass
+class UserContext:
+    user_id: str
+
+@tool
+def get_account_info(runtime: ToolRuntime[UserContext]) -> str:
+    """Get the current user's account information."""
+    user_id = runtime.context.user_id
+
+    if user_id in USER_DATABASE:
+        user = USER_DATABASE[user_id]
+        return f"Account holder: {user['name']}\nType: {user['account_type']}\nBalance: ${user['balance']}"
+    return "User not found"
+
+model = ChatOpenAI(model="gpt-4o")
+agent = create_agent(
+    model,
+    tools=[get_account_info],
+    context_schema=UserContext,
+    system_prompt="You are a financial assistant."
+)
+
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "What's my current balance?"}]},
+    context=UserContext(user_id="user123")
+)
+
+```
+
+
+Memory (Store)  
+Access persistent data across conversations using the store. The store is accessed via runtime.store and allows you to save and   retrieve user-specific or application-specific data.  
+Tools can access and update the store through ToolRuntime:  
+
+```
+from typing import Any
+from langgraph.store.memory import InMemoryStore
+from langchain.agents import create_agent
+from langchain.tools import tool, ToolRuntime
+
+
+# Access memory
+@tool
+def get_user_info(user_id: str, runtime: ToolRuntime) -> str:
+    """Look up user info."""
+    store = runtime.store
+    user_info = store.get(("users",), user_id)
+    return str(user_info.value) if user_info else "Unknown user"
+
+# Update memory
+@tool
+def save_user_info(user_id: str, user_info: dict[str, Any], runtime: ToolRuntime) -> str:
+    """Save user info."""
+    store = runtime.store
+    store.put(("users",), user_id, user_info)
+    return "Successfully saved user info."
+
+store = InMemoryStore()
+agent = create_agent(
+    model,
+    tools=[get_user_info, save_user_info],
+    store=store
+)
+
+# First session: save user info
+agent.invoke({
+    "messages": [{"role": "user", "content": "Save the following user: userid: abc123, name: Foo, age: 25, email: foo@langchain.dev"}]
+})
+
+# Second session: get user info
+agent.invoke({
+    "messages": [{"role": "user", "content": "Get user info for user with id 'abc123'"}]
+})
+# Here is the user info for user with ID "abc123":
+# - Name: Foo
+# - Age: 25
+# - Email: foo@langchain.dev
+
+
+```
+
+
+Stream writer  
+Stream custom updates from tools as they execute using runtime.stream_writer. This is useful for providing real-time feedback to  
+users about what a tool is doing.  
+
+```
+
+from langchain.tools import tool, ToolRuntime
+
+@tool
+def get_weather(city: str, runtime: ToolRuntime) -> str:
+    """Get weather for a given city."""
+    writer = runtime.stream_writer
+
+    # Stream custom updates as the tool executes
+    writer(f"Looking up data for city: {city}")
+    writer(f"Acquired data for city: {city}")
+
+    return f"It's always sunny in {city}!"
+```
+
+# Context window  
+Context window is the max amount of text (measured in tokens) an AI model can "see" and process at once.  
+
+Short term memory
+Chat models accept context using messages, which include instructions (a system message) and inputs (human messages). In chat   applications, messages alternate between human inputs and model responses, resulting in a list of messages that grows longer over   time. Because context windows are limited, many applications can benefit from using techniques to remove or “forget” stale information.  
+
+
+To add short-term memory (thread-level persistence) to an agent, you need to specify a checkpointer when creating an agent.      
+
+A thread organizes multiple interactions in a session, similar to the way email groups messages in a single conversation.  
+```
+from langchain.agents import create_agent
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+model = ChatOpenAI(model="gpt-4o-mini")
+agent = create_agent(
+    model,
+    tools=[],  # Add your tools here
+    checkpointer=InMemorySaver(),  # ← Turn on memory!
+)
+
+# Conversation 1
+result1 = agent.invoke(
+    {"messages": [HumanMessage(content="Hi! My name is Bob")]},
+    {"configurable": {"thread_id": "1"}}  # ← Conversation ID 1
+)
+print("Msg 1:", result1["messages"][-1].content)
+
+# Conversation 2 (SAME thread_id → remembers!)
+result2 = agent.invoke(
+    {"messages": [HumanMessage(content="What's my name?")]},
+    {"configurable": {"thread_id": "1"}}  # ← Same ID = remembers Bob!
+)
+print("Msg 2:", result2["messages"][-1].content)
+```
+
+
+```
+Short-term memory location:
+InMemorySaver() → Python RAM (temp)  
+SqliteSaver() → local file (persistent)  
+PostgresSaver() → database (production)
+
+thread_id → Memory slot name (like a folder)
+
+```
+
+Customizing agent memory  
+By default, agents use AgentState to manage short term memory, specifically the conversation history via a messages key.  
+You can extend AgentState to add additional fields. Custom state schemas are passed to create_agent using the state_schema parameter.  
+
+```
+from langchain.agents import create_agent, AgentState
+from langgraph.checkpoint.memory import InMemorySaver
+
+
+class CustomAgentState(AgentState):  
+    user_id: str
+    preferences: dict
+
+agent = create_agent(
+    "gpt-5",
+    tools=[get_user_info],
+    state_schema=CustomAgentState,  
+    checkpointer=InMemorySaver(),
+)
+
+# Custom state can be passed in invoke
+result = agent.invoke(
+    {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "user_id": "user_123",  
+        "preferences": {"theme": "dark"}  
+    },
+    {"configurable": {"thread_id": "1"}})
+
+```
+```
+Where	                           Lifetime                      	Mutability	                          Use When                   	
+Context (runtime.context)     	Single run	                     Immutable (read-only)	           Fixed config at start of chat	user_id, api_key, model_name
+Agent State (runtime.state)	    Single thread (conversation)	    Mutable (changes during chat)   	Short-term memory during one chat	messages, conversation_history, temp_results
+Store (runtime.store)	           Forever (cross conversations)	   Mutable (update anytime)	      Long-term memory across ALL chats	user_preferences, knowledge_base, research_notes
+
+
+```
 
