@@ -2739,6 +2739,21 @@ Customizing agent memory
 By default, agents use AgentState to manage short term memory, specifically the conversation history via a messages key.  
 You can extend AgentState to add additional fields. Custom state schemas are passed to create_agent using the state_schema parameter.  
 
+# context , agent state and store are used to provide infomration to tool   
+LLM calls tool → LangChain injects ToolRuntime → Tool gets context/state/store → Tool uses data
+Inside Every Tool  
+
+```
+@tool
+def my_smart_tool(arg1: str, runtime: ToolRuntime):  # runtime = MAGIC BOX
+    user_id = runtime.context.user_id           # Fixed config
+    messages = runtime.state["messages"]        # Chat history  
+    prefs = runtime.store.get(("users", user_id)) # Permanent memory
+    # Now tool is SUPER SMART! 🧠
+
+```
+
+
 ```
 from langchain.agents import create_agent, AgentState
 from langgraph.checkpoint.memory import InMemorySaver
@@ -2772,5 +2787,443 @@ Agent State (runtime.state)	    Single thread (conversation)	    Mutable (change
 Store (runtime.store)	           Forever (cross conversations)	   Mutable (update anytime)	      Long-term memory across ALL chats	user_preferences, knowledge_base, research_notes
 
 
+Fixed at chat start?    → Context
+Changes during 1 chat?  → Agent State  
+Lasts forever?          → Store
+
+👤 user_id              → Context
+💬 chat messages        → Agent State  
+🧠 user preferences     → Store
+
 ```
+
+Customizing agent memory  
+By default, agents use AgentState to manage short term memory, specifically the conversation history via a messages key.  
+You can extend AgentState to add additional fields. Custom state schemas are passed to create_agent using the state_schema parameter.  
+
+```
+from langchain.agents import create_agent, AgentState
+from langgraph.checkpoint.memory import InMemorySaver
+
+
+class CustomAgentState(AgentState):  
+    user_id: str
+    preferences: dict
+
+agent = create_agent(
+    "gpt-5",
+    tools=[get_user_info],
+    state_schema=CustomAgentState,  
+    checkpointer=InMemorySaver(),
+)
+
+# Custom state can be passed in invoke
+result = agent.invoke(
+    {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "user_id": "user_123",  
+        "preferences": {"theme": "dark"}  
+    },
+    {"configurable": {"thread_id": "1"}})
+
+```
+
+With short-term memory enabled, long conversations can exceed the LLM’s context window. Common solutions are:    
+Most LLMs have a maximum supported context window (denominated in tokens).  
+One way to decide when to truncate messages is to count the tokens in the message history and truncate whenever it approaches that   limit. If you’re using LangChain, you can use the trim messages utility and specify the number of tokens to keep from the list, as   well as the strategy (e.g., keep the last max_tokens) to use for handling the boundary.  
+To trim message history in an agent, use the @before_model middleware decorator:  
+
+```
+from langchain.messages import RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain.agents import create_agent, AgentState
+from langchain.agents.middleware import before_model
+from langgraph.runtime import Runtime
+from langchain_core.runnables import RunnableConfig
+from typing import Any
+
+
+@before_model
+def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    """Keep only the last few messages to fit context window."""
+    messages = state["messages"]
+
+    if len(messages) <= 3:
+        return None  # No changes needed
+
+    first_msg = messages[0]
+    recent_messages = messages[-3:] if len(messages) % 2 == 0 else messages[-4:]
+    new_messages = [first_msg] + recent_messages
+
+    return {
+        "messages": [
+            RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            *new_messages
+        ]
+    }
+
+agent = create_agent(
+    your_model_here,
+    tools=your_tools_here,
+    middleware=[trim_messages],
+    checkpointer=InMemorySaver(),
+)
+
+config: RunnableConfig = {"configurable": {"thread_id": "1"}}
+
+agent.invoke({"messages": "hi, my name is bob"}, config)
+agent.invoke({"messages": "write a short poem about cats"}, config)
+agent.invoke({"messages": "now do the same but for dogs"}, config)
+final_response = agent.invoke({"messages": "what's my name?"}, config)
+
+final_response["messages"][-1].pretty_print()
+"""
+================================== Ai Message ==================================
+
+Your name is Bob. You told me that earlier.
+If you'd like me to call you a nickname or use a different name, just say the word.
+"""
+
+```
+
+
+Delete messages  
+You can delete messages from the graph state to manage the message history.  
+This is useful when you want to remove specific messages or clear the entire message history.  
+To delete messages from the graph state, you can use the RemoveMessage.  
+
+To remove specific messages:
+
+```
+from langchain.messages import RemoveMessage  
+
+def delete_messages(state):
+    messages = state["messages"]
+    if len(messages) > 2:
+        # remove the earliest two messages
+        return {"messages": [RemoveMessage(id=m.id) for m in messages[:2]]}
+
+```
+
+To remove all messages:  
+
+```
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+def delete_messages(state):
+    return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)]}
+```
+
+
+Summarize messages  
+The problem with trimming or removing messages, as shown above, is that you may lose information from culling of the message queue.   Because of this, some applications benefit from a more sophisticated approach of summarizing the message history using a chat model.  
+
+```
+# ========================================
+# SMART CHAT AGENT WITH AUTO-SUMMARIZATION
+# ========================================
+from langchain.agents import create_agent                    # Main agent builder
+from langchain.agents.middleware import SummarizationMiddleware  # Auto-compress long chats
+from langgraph.checkpoint.memory import InMemorySaver       # RAM-based memory (lost on restart)
+from langchain_core.runnables import RunnableConfig         # Config type for thread memory
+
+
+# 1. Create memory storage (short-term chat history)
+checkpointer = InMemorySaver()                               # Stores conversation state in RAM
+
+
+# 2. Build agent with summarization + memory
+agent = create_agent(
+    model="gpt-4o",                                          # Main AI model (brain)
+    tools=[],                                                # No tools needed for this demo
+    middleware=[                                             # Special behaviors!
+        SummarizationMiddleware(                             # MAGIC: Auto-summarize long chats
+            model="gpt-4o-mini",                             # Cheap/fast summarizer model
+            trigger=("tokens", 4000),                        # Summarize when chat > 4k tokens
+            keep=("messages", 20)                            # Keep last 20 messages FULL (recent context)
+        )
+    ],
+    checkpointer=checkpointer,                               # Enable memory (REQUIRED!)
+)
+
+# 3. Config for SINGLE conversation (thread_id = memory key)
+config: RunnableConfig = {"configurable": {"thread_id": "1"}}  # All messages use SAME memory slot!
+
+# 4. Message 1: Introduce self (SAVED to thread "1")
+agent.invoke({"messages": "hi, my name is bob"}, config)     # Memory: ["Hi Bob"]
+
+# 5. Message 2: Cat poem (LOADS memory → knows you're Bob)
+agent.invoke({"messages": "write a short poem about cats"}, config)  
+# Memory: ["Hi Bob", "Cat poem"]
+
+# 6. Message 3: Dog poem (LOADS full history)
+agent.invoke({"messages": "now do the same but for dogs"}, config)
+# Memory: ["Hi Bob", "Cat poem", "Dog poem"]
+# Tokens < 4000 → No summarization yet
+
+# 7. Message 4: Test memory! (LOADS entire history → finds name)
+final_response = agent.invoke({"messages": "what's my name?"}, config)
+# AI sees: ["Hi Bob", "Cat poem", "Dog poem"] → "Your name is Bob!"
+
+# 8. Print final answer (AI REMEMBERED after 3 messages!)
+final_response["messages"][-1].pretty_print()                # Shows: "Your name is Bob!"
+```
+# Access memory  
+You can access and modify the short-term memory (state) of an agent in several ways:  
+Read short-term memory in a tool  
+
+```
+from langchain.agents import create_agent, AgentState
+from langchain.tools import tool, ToolRuntime
+
+
+class CustomState(AgentState):
+    user_id: str
+
+@tool
+def get_user_info(
+    runtime: ToolRuntime
+) -> str:
+    """Look up user info."""
+    user_id = runtime.state["user_id"]
+    return "User is John Smith" if user_id == "user_123" else "Unknown user"
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[get_user_info],
+    state_schema=CustomState,
+)
+
+result = agent.invoke({
+    "messages": "look up user information",
+    "user_id": "user_123"
+})
+print(result["messages"][-1].content)
+# > User is John Smith.
+
+```
+
+Write short-term memory from tools  
+To modify the agent’s short-term memory (state) during execution, you can return state updates directly from the tools.  
+This is useful for persisting intermediate results or making information accessible to subsequent tools or prompts.  
+
+```
+from langchain.tools import tool, ToolRuntime
+from langchain_core.runnables import RunnableConfig
+from langchain.messages import ToolMessage
+from langchain.agents import create_agent, AgentState
+from langgraph.types import Command
+from pydantic import BaseModel
+
+
+class CustomState(AgentState):  
+    user_name: str
+
+class CustomContext(BaseModel):
+    user_id: str
+
+@tool
+def update_user_info(
+    runtime: ToolRuntime[CustomContext, CustomState],
+) -> Command:
+    """Look up and update user info."""
+    user_id = runtime.context.user_id
+    name = "John Smith" if user_id == "user_123" else "Unknown user"
+    return Command(update={  
+        "user_name": name,
+        # update the message history
+        "messages": [
+            ToolMessage(
+                "Successfully looked up user information",
+                tool_call_id=runtime.tool_call_id
+            )
+        ]
+    })
+
+@tool
+def greet(
+    runtime: ToolRuntime[CustomContext, CustomState]
+) -> str | Command:
+    """Use this to greet the user once you found their info."""
+    user_name = runtime.state.get("user_name", None)
+    if user_name is None:
+       return Command(update={
+            "messages": [
+                ToolMessage(
+                    "Please call the 'update_user_info' tool it will get and update the user's name.",
+                    tool_call_id=runtime.tool_call_id
+                )
+            ]
+        })
+    return f"Hello {user_name}!"
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[update_user_info, greet],
+    state_schema=CustomState, 
+    context_schema=CustomContext,
+)
+
+agent.invoke(
+    {"messages": [{"role": "user", "content": "greet the user"}]},
+    context=CustomContext(user_id="user_123"),
+)
+```
+
+
+
+Prompt (Dynamic)  
+Access short term memory (state) in middleware to create dynamic prompts based on conversation history or custom state fields.  
+
+```
+from langchain.agents import create_agent
+from typing import TypedDict
+from langchain.agents.middleware import dynamic_prompt, ModelRequest
+
+
+class CustomContext(TypedDict):
+    user_name: str
+
+
+def get_weather(city: str) -> str:
+    """Get the weather in a city."""
+    return f"The weather in {city} is always sunny!"
+
+
+@dynamic_prompt
+def dynamic_system_prompt(request: ModelRequest) -> str:
+    user_name = request.runtime.context["user_name"]
+    system_prompt = f"You are a helpful assistant. Address the user as {user_name}."
+    return system_prompt
+
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[get_weather],
+    middleware=[dynamic_system_prompt],
+    context_schema=CustomContext,
+)
+
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "What is the weather in SF?"}]},
+    context=CustomContext(user_name="John Smith"),
+)
+for msg in result["messages"]:
+    msg.pretty_print()
+
+```
+
+
+Before model  
+Access short term memory (state) in @before_model middleware to process messages before model calls.   
+```
+from langchain.messages import RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain.agents import create_agent, AgentState
+from langchain.agents.middleware import before_model
+from langchain_core.runnables import RunnableConfig
+from langgraph.runtime import Runtime
+from typing import Any
+
+
+@before_model
+def trim_messages(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    """Keep only the last few messages to fit context window."""
+    messages = state["messages"]
+
+    if len(messages) <= 3:
+        return None  # No changes needed
+
+    first_msg = messages[0]
+    recent_messages = messages[-3:] if len(messages) % 2 == 0 else messages[-4:]
+    new_messages = [first_msg] + recent_messages
+
+    return {
+        "messages": [
+            RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            *new_messages
+        ]
+    }
+
+
+agent = create_agent(
+    "gpt-5-nano",
+    tools=[],
+    middleware=[trim_messages],
+    checkpointer=InMemorySaver()
+)
+
+config: RunnableConfig = {"configurable": {"thread_id": "1"}}
+
+agent.invoke({"messages": "hi, my name is bob"}, config)
+agent.invoke({"messages": "write a short poem about cats"}, config)
+agent.invoke({"messages": "now do the same but for dogs"}, config)
+final_response = agent.invoke({"messages": "what's my name?"}, config)
+
+final_response["messages"][-1].pretty_print()
+"""
+================================== Ai Message ==================================
+
+Your name is Bob. You told me that earlier.
+If you'd like me to call you a nickname or use a different name, just say the word.
+"""
+
+```
+
+Differncen betwwen before_model and middleware  
+
+Middelware called Once per invoke() and before_model call before every LLM call (agent loop repeats)
+
+```
+class DebugMiddleware(AgentMiddleware):
+    def before_agent(self, state, runtime):      # ONCE per invoke()
+        print("🚀 AGENT STARTING (1x)")
+        return state
+    
+    @before_model                               # MANY times!
+    def before_model_hook(self, state, runtime):
+        print(f"🤖 AI THINKING #{len(state['messages'])}")
+        return state
+
+agent = create_agent(model, tools, middleware=[DebugMiddleware()])
+
+agent.invoke("Complex task with tools")  # Triggers 3 AI loops
+
+```
+
+After model  
+Access short term memory (state) in @after_model middleware to process messages after model calls.    
+```
+from langchain.messages import RemoveMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain.agents import create_agent, AgentState
+from langchain.agents.middleware import after_model
+from langgraph.runtime import Runtime
+
+
+@after_model
+def validate_response(state: AgentState, runtime: Runtime) -> dict | None:
+    """Remove messages containing sensitive words."""
+    STOP_WORDS = ["password", "secret"]
+    last_message = state["messages"][-1]
+    if any(word in last_message.content for word in STOP_WORDS):
+        return {"messages": [RemoveMessage(id=last_message.id)]}
+    return None
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[],
+    middleware=[validate_response],
+    checkpointer=InMemorySaver(),
+)
+
+```
+
+
+
+
+
+
 
