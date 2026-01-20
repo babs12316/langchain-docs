@@ -3194,7 +3194,8 @@ agent.invoke("Complex task with tools")  # Triggers 3 AI loops
 ```
 
 After model  
-Access short term memory (state) in @after_model middleware to process messages after model calls.    
+Access short term memory (state) in @after_model middleware to process messages after model calls.  
+@after_model runs after EVERY AI call (same frequency as @before_model!)
 ```
 from langchain.messages import RemoveMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -3221,9 +3222,254 @@ agent = create_agent(
 
 ```
 
+# Streaming  
+Stream real-time updates from agent runs  
+
+LangChain implements a streaming system to surface real-time updates.  
+Streaming is crucial for enhancing the responsiveness of applications built on LLMs. By displaying output progressively, even before a     complete response is ready, streaming significantly improves user experience (UX), particularly when dealing with the latency of   LLMs.
 
 
+Supported stream modes   
+Pass one or more of the following stream modes as a list to the stream or astream methods:  
+
+updates: 	Streams state updates after each agent step. If multiple updates are made in the same step (e.g., multiple nodes are run),   those updates are streamed separately.  
+messages:	stream tokens as they are produced by the LLM  
+custom:	Streams custom data from inside your graph nodes using the stream writer. 
 
 
+Agent Progress  
+To stream agent progress, use the stream or astream methods with stream_mode="updates". This emits an event after every agent step.
+```
+from langchain.agents import create_agent
 
+
+def get_weather(city: str) -> str:
+    """Get weather for a given city."""
+
+    return f"It's always sunny in {city}!"
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[get_weather],
+)
+for chunk in agent.stream(  
+    {"messages": [{"role": "user", "content": "What is the weather in SF?"}]},
+    stream_mode="updates",
+):
+    for step, data in chunk.items():
+        print(f"step: {step}")
+        print(f"content: {data['messages'][-1].content_blocks}")
+
+
+step: model
+content: [{'type': 'tool_call', 'name': 'get_weather', 'args': {'city': 'San Francisco'}, 'id': 'call_OW2NYNsNSKhRZpjW0wm2Aszd'}]
+
+step: tools
+content: [{'type': 'text', 'text': "It's always sunny in San Francisco!"}]
+
+step: model
+content: [{'type': 'text', 'text': 'It's always sunny in San Francisco!'}]
+```
+​
+LLM tokens  
+To stream tokens as they are produced by the LLM, use stream_mode="messages".  
+```
+from langchain.agents import create_agent
+
+
+def get_weather(city: str) -> str:
+    """Get weather for a given city."""
+
+    return f"It's always sunny in {city}!"
+
+agent = create_agent(
+    model="gpt-5-nano",
+    tools=[get_weather],
+)
+for token, metadata in agent.stream(  
+    {"messages": [{"role": "user", "content": "What is the weather in SF?"}]},
+    stream_mode="messages",
+):
+    print(f"node: {metadata['langgraph_node']}")
+    print(f"content: {token.content_blocks}")
+    print("\n")
+
+```
+
+Custom updates  
+To stream updates from tools as they are executed, you can use get_stream_writer.  
+```
+from langchain.agents import create_agent
+from langgraph.config import get_stream_writer  
+
+
+def get_weather(city: str) -> str:
+    """Get weather for a given city."""
+    writer = get_stream_writer()  
+    # stream any arbitrary data
+    writer(f"Looking up data for city: {city}")
+    writer(f"Acquired data for city: {city}")
+    return f"It's always sunny in {city}!"
+
+agent = create_agent(
+    model="claude-sonnet-4-5-20250929",
+    tools=[get_weather],
+)
+
+for chunk in agent.stream(
+    {"messages": [{"role": "user", "content": "What is the weather in SF?"}]},
+    stream_mode="custom"
+):
+    print(chunk)
+
+
+Looking up data for city: San Francisco
+Acquired data for city: San Francisco
+
+```
+
+Streaming from sub-agents  
+When there are multiple LLMs at any point in an agent, it’s often necessary to disambiguate the source of messages as they are   generated.  
+To do this, pass a name to each agent when creating it. This name is then available in metadata via the lc_agent_name key when   streaming in "messages" mode.  
+
+```
+from typing import Any
+
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
+from langchain.messages import AIMessage, AnyMessage
+
+
+def get_weather(city: str) -> str:
+    """Get weather for a given city."""
+
+    return f"It's always sunny in {city}!"
+
+
+weather_model = init_chat_model("openai:gpt-5.2")
+weather_agent = create_agent(
+    model=weather_model,
+    tools=[get_weather],
+    name="weather_agent",  
+)
+
+
+def call_weather_agent(query: str) -> str:
+    """Query the weather agent."""
+    result = weather_agent.invoke({
+        "messages": [{"role": "user", "content": query}]
+    })
+    return result["messages"][-1].text
+
+
+supervisor_model = init_chat_model("openai:gpt-5.2")
+agent = create_agent(
+    model=supervisor_model,
+    tools=[call_weather_agent],
+    name="supervisor",  
+)
+
+```
+
+
+Disable streaming  
+In some applications you might need to disable streaming of individual tokens for a given model. This is useful when:  
+Working with multi-agent systems to control which agents stream their output  
+Mixing models that support streaming with those that do not  
+Deploying to LangSmith and wanting to prevent certain model outputs from being streamed to the client  
+Set streaming=False when initializing the model.  
+
+```
+from langchain_openai import ChatOpenAI
+
+model = ChatOpenAI(
+    model="gpt-4o",
+    streaming=False
+)
+
+
+```
+
+# Structured output
+
+Structured output allows agents to return data in a specific, predictable format. Instead of parsing natural language responses, you get structured data in the form of JSON   objects, Pydantic models, or dataclasses that your application can use directly.     
+ 
+Response format  
+Use response_format to control how the agent returns structured data:  
+ToolStrategy[StructuredResponseT]: Uses tool calling for structured output.  Its Universal: Works with any tool-calling model
+ProviderStrategy[StructuredResponseT]: Uses provider-native structured output. Its Faster: Single LLM call, no extra tool execution  but Provider-specific (only OpenAI, Anthropic, Gemini, Grok, etc.)  
+type[StructuredResponseT]: Schema type - automatically selects best strategy based on model capabilities  
+None: Structured output not explicitly requested   
+
+Provider Stratergy
+
+```
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain_core.pydantic_v1 import BaseModel, Field
+from langchain.agents.structured_output import ProviderStrategy
+
+class ContactInfo(BaseModel):
+    name: str = Field(description="The name of the person")
+    email: str = Field(description="The email address of the person")
+    phone: str = Field(description="The phone number of the person")
+
+model = ChatOpenAI(model="gpt-4o")  # Native support
+agent = create_agent(
+    model=model,
+    tools=[],  # No real tools needed
+    response_format=ProviderStrategy(ContactInfo),  # Native API
+)
+
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Extract contact info from: John Doe, john@example.com, (555) 123-4567"}]
+})
+print(result.structured_response)
+# ContactInfo(name='John Doe', email='john@example.com', phone='(555) 123-4567')
+
+```  
+
+
+ToolStrategy (Tool Calling)  
+
+```
+from langchain.agents.structured_output import ToolStrategy
+
+agent = create_agent(
+    model=ChatOpenAI(model="gpt-4o-mini"),  # Tool calling only
+    tools=[],
+    response_format=ToolStrategy(
+        ContactInfo,
+        tool_message_content="Contact info extracted!",  # Custom chat message
+        handle_error=True  # Auto-retry validation errors
+    ),
+)
+
+```
+
+# Middelware
+
+Middleware provides a way to more tightly control what happens inside the agent. Middleware is useful for the following:  
+Tracking agent behavior with logging, analytics, and debugging.  
+Transforming prompts, tool selection, and output formatting.  
+Adding retries, fallbacks, and early termination logic.  
+Applying rate limits, guardrails, and PII detection.  
+
+
+wrap_model_call   
+Wraps every LLM call in the agent loop.  
+• Dynamic model swapping (gpt-4o → o1 based on complexity)  
+• Request modification (add context/tools)  
+• Retry logic (rate limits/timeouts)  
+• Caching (same prompt → cached response)  
+• Observability (log inputs/outputs)  
+
+
+wrap_tool_call
+Wraps every individual tool execution   
+• Custom error handling (return safe message vs crash)   
+• Tool permissions (block sensitive tools)  
+• Mocking (emulate tools for testing)  
+• Logging/caching tool calls  
+• Rate limiting per-tool   
 
