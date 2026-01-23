@@ -3471,5 +3471,55 @@ Wraps every individual tool execution
 • Tool permissions (block sensitive tools)  
 • Mocking (emulate tools for testing)  
 • Logging/caching tool calls  
-• Rate limiting per-tool   
+• Rate limiting per-tool     
 
+
+# Runtime information
+
+context - contain read only info such as user id and is used for personalization  
+
+Store: a BaseStore instance used for long-term memory  
+
+Stream writer: an object used for streaming information via the "custom" stream mode  
+
+
+You can access the runtime information within tools and middleware.  
+
+Inside middleware  
+You can access runtime information in middleware to create dynamic prompts, modify messages, or control agent behavior based on user context.   
+Use request.runtime to access the Runtime object inside middleware decorators. The runtime object is available in the ModelRequest parameter passed to middleware functions.    
+
+
+# Why do agents fail?  
+When agents fail, it’s usually because the LLM call inside the agent took the wrong action / didn’t do what we expected. LLMs fail for one of two reasons:  
+The underlying LLM is not capable enough  
+The “right” context was not passed to the LLM    
+
+Context engineering is providing the right information and tools in the right format so the LLM can accomplish a task.  
+
+The agent loop  
+A typical agent loop consists of two main steps:  
+Model call - calls the LLM with a prompt and available tools, returns either a response or a request to execute tools  
+Tool execution - executes the tools that the LLM requested, returns tool results    
+
+This loop continues until the LLM decides to finish.  
+
+
+To build reliable agents, you need to control what happens at each step of the agent loop, as well as what happens between steps.   
+
+Model Context  
+What goes into model calls (instructions, message history, tools, response format)  
+Transient - Scope/saved for : Single invoke(), saved in state, can access using request.state  
+
+Tool Context  
+What tools can access and produce (reads/writes to state, store, runtime context)  
+Persistent- scope/saved for : Multiple invoke()s, saved in store/checkpoints, accessed using runtime.store/ checkpoints  
+
+Life-cycle Context  
+What happens between model and tool calls (summarization, guardrails, logging, etc.)
+Persistent- scope/saved for : Multiple invoke()s, saved in store/checkpoints, accessed using runtime.store/ checkpoints    
+
+Tools let the model interact with databases, APIs, and external systems. 
+
+
+​
